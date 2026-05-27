@@ -1,0 +1,12 @@
+.env
+.env.local
+.env.production
+.vercel
+.idea
+.vscode
+node_modules
+vendor
+tmp
+uploads/documents
+uploads/previews
+*.log
