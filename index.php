@@ -1,6 +1,8 @@
 <?php
-session_start();
-include "config/db.php";
+// Redirect to the API wrapper for Vercel deployment
+header('Location: /api/index.php');
+exit();
+?>
 
 $message = "";
 
