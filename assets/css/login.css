@@ -21,8 +21,8 @@
 
 html,
 body {
-    height: 100%;
-    overflow: hidden;
+    min-height: 100%;
+    overflow-y: auto;
 }
 
 body {
@@ -34,10 +34,10 @@ body {
 
 .login-page {
     position: relative;
-    height: 100vh;
+    min-height: 100vh;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    overflow-y: auto;
     background:
         radial-gradient(circle at 22% 46%, rgba(128, 0, 0, 0.04), transparent 30%),
         linear-gradient(90deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0) 42%);
@@ -169,7 +169,7 @@ body {
     font-weight: 800;
     letter-spacing: -0.02em;
     margin-bottom: 24px;
-    white-space: nowrap;
+    white-space: normal;
     max-width: 100%;
 }
 
