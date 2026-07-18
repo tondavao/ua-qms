@@ -109,7 +109,7 @@ $stmt = $conn->prepare("
         AND d.semester = ?
     WHERE dt.required = 'Yes' AND o.status = 'Active' AND o.is_archived = FALSE
     GROUP BY dt.doc_type_id, dt.doc_code, dt.description
-    ORDER BY compliance_rate ASC, (pending_docs + revision_docs + rejected_docs) DESC, dt.doc_code ASC
+    ORDER BY ROUND((COUNT(DISTINCT CASE WHEN d.status = 'Approved' THEN o.office_id END) / NULLIF(COUNT(DISTINCT o.office_id), 0)) * 100) ASC, (SUM(CASE WHEN d.status IN ('Awaiting Review', 'Revision', 'Rejected') THEN 1 ELSE 0 END)) DESC, dt.doc_code ASC
 ");
 $stmt->bind_param("ss", $selected_ay_range, $selected_quarter);
 $stmt->execute();
@@ -145,7 +145,7 @@ $stmt = $conn->prepare("
         AND d.semester = ?
     WHERE o.status = 'Active' AND o.is_archived = FALSE AND dt.required = 'Yes'
     GROUP BY o.office_id, o.office_name, o.office_code
-    ORDER BY compliance_rate ASC, (pending_docs + revision_docs + rejected_docs) DESC, o.office_name ASC
+    ORDER BY ROUND((COUNT(DISTINCT CASE WHEN d.status = 'Approved' THEN dt.doc_type_id END) / NULLIF(COUNT(DISTINCT dt.doc_type_id), 0)) * 100) ASC, (SUM(CASE WHEN d.status IN ('Awaiting Review', 'Revision', 'Rejected') THEN 1 ELSE 0 END)) DESC, o.office_name ASC
 ");
 $stmt->bind_param("ss", $selected_ay_range, $selected_quarter);
 $stmt->execute();

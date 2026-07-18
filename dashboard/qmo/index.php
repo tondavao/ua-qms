@@ -1,19 +1,18 @@
 <?php
-try {
-    session_start();
-    require_once __DIR__ . "/../../config/db.php";
-    require_once __DIR__ . "/../../includes/system_settings.php";
-    
-    if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'QMO Admin') {
-        header("Location: ../../index.php");
-        exit();
-    }
-    
-    $conn->set_charset("utf8mb4");
-    
-    function h($value) {
-        return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
-    }
+session_start();
+require_once __DIR__ . "/../../config/db.php";
+require_once __DIR__ . "/../../includes/system_settings.php";
+
+if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'QMO Admin') {
+    header("Location: ../../index.php");
+    exit();
+}
+
+$conn->set_charset("utf8mb4");
+
+function h($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
 
 function normalize_year($value) {
     if (preg_match_all('/\d{4}/', (string)$value, $matches)) {
@@ -141,7 +140,7 @@ $stmt = $conn->prepare("
         AND d.semester = ?
     WHERE o.status = 'Active' AND o.is_archived = FALSE AND dt.required = 'Yes'
     GROUP BY o.office_id, o.office_name, o.office_code
-    ORDER BY compliance_rate ASC, (pending_docs + revision_docs + rejected_docs) DESC, o.office_name ASC
+    ORDER BY ROUND((COUNT(DISTINCT CASE WHEN d.status = 'Approved' THEN dt.doc_type_id END) / NULLIF(COUNT(DISTINCT dt.doc_type_id), 0)) * 100) ASC, (SUM(CASE WHEN d.status IN ('Awaiting Review', 'Revision', 'Rejected') THEN 1 ELSE 0 END)) DESC, o.office_name ASC
     LIMIT 8
 ");
 $stmt->bind_param("ss", $selected_ay_range, $selected_quarter);
@@ -170,12 +169,6 @@ while ($row = $result->fetch_assoc()) {
 $stmt->close();
 
     $needs_action = (int)$stats['pending'] + (int)$stats['revision'] + (int)$stats['rejected'];
-} catch (Throwable $e) {
-    file_put_contents(__DIR__ . '/error.txt', $e->getMessage() . " in " . $e->getFile() . " on line " . $e->getLine() . "\n" . $e->getTraceAsString());
-    ini_set('display_errors', 1);
-    error_reporting(E_ALL);
-    throw $e;
-}
 ?>
 <!DOCTYPE html>
 <html lang="en">
