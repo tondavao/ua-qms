@@ -1,18 +1,19 @@
 <?php
-session_start();
-require_once __DIR__ . "/../../config/db.php";
-require_once __DIR__ . "/../../includes/system_settings.php";
-
-if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'QMO Admin') {
-    header("Location: ../../index.php");
-    exit();
-}
-
-$conn->set_charset("utf8mb4");
-
-function h($value) {
-    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
-}
+try {
+    session_start();
+    require_once __DIR__ . "/../../config/db.php";
+    require_once __DIR__ . "/../../includes/system_settings.php";
+    
+    if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'QMO Admin') {
+        header("Location: ../../index.php");
+        exit();
+    }
+    
+    $conn->set_charset("utf8mb4");
+    
+    function h($value) {
+        return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+    }
 
 function normalize_year($value) {
     if (preg_match_all('/\d{4}/', (string)$value, $matches)) {
@@ -168,7 +169,13 @@ while ($row = $result->fetch_assoc()) {
 }
 $stmt->close();
 
-$needs_action = (int)$stats['pending'] + (int)$stats['revision'] + (int)$stats['rejected'];
+    $needs_action = (int)$stats['pending'] + (int)$stats['revision'] + (int)$stats['rejected'];
+} catch (Throwable $e) {
+    file_put_contents(__DIR__ . '/error.txt', $e->getMessage() . " in " . $e->getFile() . " on line " . $e->getLine() . "\n" . $e->getTraceAsString());
+    ini_set('display_errors', 1);
+    error_reporting(E_ALL);
+    throw $e;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">

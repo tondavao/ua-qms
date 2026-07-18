@@ -16,8 +16,8 @@
 
 
 -- Dumping database structure for ua_qms
-CREATE DATABASE IF NOT EXISTS `ua_qms` /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci */ /*!80016 DEFAULT ENCRYPTION='N' */;
-USE `ua_qms`;
+CREATE DATABASE IF NOT EXISTS `if0_42436961_ua_qms` /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci */ /*!80016 DEFAULT ENCRYPTION='N' */;
+USE `if0_42436961_ua_qms`;
 
 -- Dumping structure for table ua_qms.academic_years
 CREATE TABLE IF NOT EXISTS `academic_years` (
