@@ -8,6 +8,12 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'QMO Admin') {
     exit();
 }
 
+if (!function_exists('h')) {
+    function h($value) {
+        return htmlspecialchars((string) ($value ?? ''), ENT_QUOTES, 'UTF-8');
+    }
+}
+
 ua_qms_seed_default_units($conn);
 
 if (isset($_GET['action']) || isset($_POST['action'])) {
@@ -32,7 +38,8 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
                 u.role,
                 u.office_id,
                 o.office_name AS unit,
-                u.status
+                u.status,
+                u.profile_photo
             FROM users u
             LEFT JOIN offices o ON u.office_id = o.office_id
             ORDER BY u.full_name ASC
@@ -61,7 +68,7 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
         $password = $_POST["password"] ?? "";
         $confirm = $_POST["confirm_password"] ?? "";
 
-        if ($name === "" || $email === "" || !$office_id) {
+        if ($name === "" || $email === "" || ($role !== 'QMO Admin' && !$office_id)) {
             response(false, "Name, email, and unit are required.");
         }
 
@@ -74,8 +81,9 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
         }
 
         $hash = password_hash($password, PASSWORD_DEFAULT);
+        $office_id_val = ($office_id > 0) ? $office_id : null;
         $stmt = $conn->prepare("INSERT INTO users (full_name, email, role, office_id, password, status) VALUES (?, ?, ?, ?, ?, 'Active')");
-        $stmt->bind_param("sssis", $name, $email, $role, $office_id, $hash);
+        $stmt->bind_param("sssis", $name, $email, $role, $office_id_val, $hash);
         if ($stmt->execute()) {
             response(true, "Account created successfully.");
         }
@@ -91,9 +99,11 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
         $password = $_POST["password"] ?? "";
         $confirm = $_POST["confirm_password"] ?? "";
 
-        if (!$id || $name === "" || $email === "" || !$office_id) {
+        if (!$id || $name === "" || $email === "" || ($role !== 'QMO Admin' && !$office_id)) {
             response(false, "User, name, email, and unit are required.");
         }
+
+        $office_id_val = ($office_id > 0) ? $office_id : null;
 
         if ($password !== "") {
             if (strlen($password) < 6) {
@@ -104,10 +114,10 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
             }
             $hash = password_hash($password, PASSWORD_DEFAULT);
             $stmt = $conn->prepare("UPDATE users SET full_name = ?, email = ?, role = ?, office_id = ?, password = ? WHERE user_id = ?");
-            $stmt->bind_param("sssiis", $name, $email, $role, $office_id, $hash, $id);
+            $stmt->bind_param("sssisi", $name, $email, $role, $office_id_val, $hash, $id);
         } else {
             $stmt = $conn->prepare("UPDATE users SET full_name = ?, email = ?, role = ?, office_id = ? WHERE user_id = ?");
-            $stmt->bind_param("sssii", $name, $email, $role, $office_id, $id);
+            $stmt->bind_param("sssii", $name, $email, $role, $office_id_val, $id);
         }
 
         if ($stmt->execute()) {
@@ -140,6 +150,7 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="icon" type="image/jpeg" href="../../assets/img/ua-qms-logo.jpg">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Manage Accounts | UA QMS</title>
@@ -155,30 +166,13 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
         :root { --ua-maroon: #800000; }
         .bg-ua-maroon { background-color: var(--ua-maroon); }
         .text-ua-maroon { color: var(--ua-maroon); }
-        .profile-dropdown {
-            display: none;
-            position: absolute;
-            top: 55px;
-            right: 0;
-            background: white;
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-            z-index: 50;
-            min-width: 220px;
-            overflow: hidden;
-        }
-        .profile-dropdown.active { display: block; }
-        .profile-dropdown-header { padding: 12px 16px; border-bottom: 1px solid #e5e7eb; }
-        .profile-dropdown-item { display: flex; gap: 10px; padding: 12px 16px; color: #374151; text-decoration: none; }
-        .profile-dropdown-item:hover { background: #f3f4f6; }
-        .profile-dropdown-item.logout { color: #dc2626; border-top: 1px solid #e5e7eb; }
+
     </style>
 </head>
 <body class="bg-gray-50 font-sans" data-user-role="<?php echo htmlspecialchars($_SESSION['role']); ?>">
 <script>localStorage.setItem('userRole', '<?php echo htmlspecialchars($_SESSION['role']); ?>');</script>
 <div class="flex h-screen overflow-hidden">
-    <?php include "../../includes/sidebar_qmo.php"; ?>
+    <?php require_once __DIR__ . "/../../includes/sidebar_qmo.php"; ?>
 
     <main class="flex-1 flex flex-col overflow-hidden">
         <header class="h-20 bg-white border-b border-gray-200 flex items-center justify-between px-8 flex-shrink-0">
@@ -196,9 +190,13 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
                     <span id="notification-badge" class="absolute top-1 right-1 min-w-[16px] h-4 px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center hidden">0</span>
                 </button>
                 <div class="relative">
-                    <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition">
-                        <?php echo isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'; ?>
-                    </button>
+                    <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition overflow-hidden">
+                            <?php if (!empty($_SESSION['profile_photo'])): ?>
+                                <img src="<?php echo htmlspecialchars($_SESSION['profile_photo']); ?>" class="w-full h-full object-cover rounded-full" alt="Profile" />
+                            <?php else: ?>
+                                <?php echo h(isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'); ?>
+                            <?php endif; ?>
+                        </button>
                     <div id="profile-dropdown" class="profile-dropdown">
                         <div class="profile-dropdown-header">
                             <p class="font-semibold text-gray-900"><?php echo htmlspecialchars($_SESSION['full_name'] ?? 'User'); ?></p>
@@ -240,276 +238,308 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
                     </table>
                 </div>
             </div>
-        </div>
-    </main>
-</div>
 
-<div id="accountModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-[60] backdrop-blur-sm">
-    <div class="bg-white rounded-lg shadow-2xl w-full max-w-lg overflow-hidden">
-        <div class="p-5 border-b border-gray-100 flex justify-between items-center">
-            <h3 id="accountModalTitle" class="text-lg font-bold text-gray-800">Add Account</h3>
-            <button onclick="closeModal('accountModal')" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
-        </div>
-        <form id="accountForm" class="p-5 space-y-4">
-            <input type="hidden" name="action" id="formAction" value="add">
-            <input type="hidden" name="id" id="userId">
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
-                <input type="text" name="name" id="userName" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none">
-            </div>
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
-                <input type="email" name="email" id="userEmail" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none">
-            </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Role</label>
-                    <select name="role" id="userRole" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none">
-                        <option value="Office">Unit User</option>
-                        <option value="Dean">Dean</option>
-                        <option value="QMO Admin">QMO Admin</option>
-                    </select>
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Unit / Department</label>
-                    <select name="office_id" id="userOffice" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none"></select>
-                </div>
-            </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Password</label>
-                    <div class="relative">
-                        <input type="password" name="password" id="userPassword" placeholder="Min 6 characters" class="w-full pl-4 pr-10 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none text-sm">
-                        <button type="button" onclick="togglePasswordVisibility('userPassword', 'eyeIcon1')" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none">
-                            <i class="fas fa-eye text-sm" id="eyeIcon1"></i>
-                        </button>
+            <!-- Account Modal -->
+            <div id="accountModal" class="fixed inset-0 bg-black/60 hidden items-center justify-center z-[9999] backdrop-blur-sm w-screen h-screen">
+                <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden">
+                    <div class="px-6 py-4 bg-[#800000] text-white flex justify-between items-center">
+                        <h3 id="accountModalTitle" class="font-bold flex items-center gap-2"><i class="fas fa-user-circle"></i> Add Account</h3>
+                        <button onclick="closeModal('accountModal')" class="text-white hover:text-gray-200 transition"><i class="fas fa-times"></i></button>
                     </div>
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Confirm Password</label>
-                    <div class="relative">
-                        <input type="password" name="confirm_password" id="userConfirmPassword" placeholder="Confirm password" class="w-full pl-4 pr-10 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none text-sm">
-                        <button type="button" onclick="togglePasswordVisibility('userConfirmPassword', 'eyeIcon2')" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none">
-                            <i class="fas fa-eye text-sm" id="eyeIcon2"></i>
+                    <form id="accountForm" class="p-5 space-y-4">
+                        <input type="hidden" name="action" id="formAction" value="add">
+                        <input type="hidden" name="id" id="userId">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
+                            <input type="text" name="name" id="userName" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
+                            <input type="email" name="email" id="userEmail" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none">
+                        </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Role</label>
+                                <select name="role" id="userRole" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none">
+                                    <option value="Office">Unit User</option>
+                                    <option value="Dean">Dean</option>
+                                    <option value="QMO Admin">QMO Admin</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Unit / Department</label>
+                                <select name="office_id" id="userOffice" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none"></select>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                                <div class="relative">
+                                    <input type="password" name="password" id="userPassword" placeholder="Min 6 characters" class="w-full pl-4 pr-10 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none text-sm">
+                                    <button type="button" onclick="togglePasswordVisibility('userPassword', 'eyeIcon1')" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none">
+                                        <i class="fas fa-eye text-sm" id="eyeIcon1"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Confirm Password</label>
+                                <div class="relative">
+                                    <input type="password" name="confirm_password" id="userConfirmPassword" placeholder="Confirm password" class="w-full pl-4 pr-10 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none text-sm">
+                                    <button type="button" onclick="togglePasswordVisibility('userConfirmPassword', 'eyeIcon2')" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none">
+                                        <i class="fas fa-eye text-sm" id="eyeIcon2"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="passwordNotice" class="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-600">
+                            Please specify a password for the new account.
+                        </div>
+                        <button type="submit" class="w-full bg-ua-maroon text-white py-3 rounded-lg font-bold hover:bg-red-900 transition">
+                            Save Account
                         </button>
-                    </div>
+                    </form>
                 </div>
             </div>
-            <div id="passwordNotice" class="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-600">
-                Please specify a password for the new account.
-            </div>
-            <button type="submit" class="w-full bg-ua-maroon text-white py-3 rounded-lg font-bold hover:bg-red-900 transition">
-                Save Account
-            </button>
-        </form>
+        </main>
     </div>
-</div>
+
+
 
 <script>
-let users = [];
-let offices = [];
+(function() {
+    let users = [];
+    let offices = [];
 
-function escapeHtml(value) {
-    return String(value ?? '').replace(/[&<>"']/g, function(char) {
-        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[char];
-    });
-}
-
-async function fetchOffices() {
-    const res = await fetch('manage_accounts.php?action=offices');
-    const data = await res.json();
-    offices = data.data || [];
-    const options = offices.map(office => `<option value="${office.office_id}">${escapeHtml(office.office_name)}</option>`).join('');
-    document.getElementById('userOffice').innerHTML = options;
-}
-
-async function fetchUsers() {
-    const res = await fetch('manage_accounts.php?action=fetch');
-    const data = await res.json();
-    if (data.success) {
-        users = data.data || [];
-        renderTable();
-    }
-}
-
-function renderTable() {
-    const query = document.getElementById('searchInput')?.value.toLowerCase() || '';
-    const filtered = users.filter(user => {
-        return [user.name, user.email, user.role, user.unit, user.status]
-            .join(' ')
-            .toLowerCase()
-            .includes(query);
-    });
-
-    const tbody = document.getElementById('userTableBody');
-    if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="px-5 py-8 text-center text-gray-500">No accounts found.</td></tr>';
-        return;
+    function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, function(char) {
+            return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[char];
+        });
     }
 
-    tbody.innerHTML = filtered.map(user => `
-        <tr class="hover:bg-gray-50 transition-colors">
-            <td class="px-5 py-4">
-                <div class="flex items-center gap-3">
-                    <div class="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 font-bold">${escapeHtml(user.name || 'U').charAt(0)}</div>
-                    <div>
-                        <p class="font-medium text-gray-900">${escapeHtml(user.name)}</p>
-                        <p class="text-xs text-gray-500">${escapeHtml(user.email)}</p>
+    async function fetchOffices() {
+        const res = await fetch('manage_accounts.php?action=offices');
+        const data = await res.json();
+        offices = data.data || [];
+        const options = '<option value="">N/A (QMO Admin Only)</option>' + offices.map(office => `<option value="${office.office_id}">${escapeHtml(office.office_name)}</option>`).join('');
+        document.getElementById('userOffice').innerHTML = options;
+    }
+
+    async function fetchUsers() {
+        const res = await fetch('manage_accounts.php?action=fetch');
+        const data = await res.json();
+        if (data.success) {
+            users = data.data || [];
+            renderTable();
+        }
+    }
+
+    function renderTable() {
+        const query = document.getElementById('searchInput')?.value.toLowerCase() || '';
+        const filtered = users.filter(user => {
+            return [user.name, user.email, user.role, user.unit, user.status]
+                .join(' ')
+                .toLowerCase()
+                .includes(query);
+        });
+
+        const tbody = document.getElementById('userTableBody');
+        if (filtered.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="px-5 py-8 text-center text-gray-500">No accounts found.</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = filtered.map(user => `
+            <tr class="hover:bg-gray-50 transition-colors">
+                <td class="px-5 py-4">
+                    <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 font-bold overflow-hidden">
+                            ${user.profile_photo ? `<img src="${escapeHtml(user.profile_photo)}" class="w-full h-full object-cover" />` : escapeHtml(user.name || 'U').charAt(0)}
+                        </div>
+                        <div>
+                            <p class="font-medium text-gray-900">${escapeHtml(user.name)}</p>
+                            <p class="text-xs text-gray-500">${escapeHtml(user.email)}</p>
+                        </div>
                     </div>
-                </div>
-            </td>
-            <td class="px-5 py-4 text-sm font-medium text-gray-700">${escapeHtml(user.role)}</td>
-            <td class="px-5 py-4 text-sm text-gray-700">${escapeHtml(user.unit || 'Unassigned')}</td>
-            <td class="px-5 py-4">
-                <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ${user.status === 'Active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">${escapeHtml(user.status)}</span>
-            </td>
-            <td class="px-5 py-4 text-right">
-                <div class="inline-flex items-center gap-2">
-                    <button onclick="openAccountModal(${Number(user.id)})" class="inline-flex items-center gap-1 bg-red-50 text-[#800000] border border-red-200 hover:bg-[#800000] hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-bold transition shadow-sm">
-                        <i class="fas fa-edit"></i> Edit
-                    </button>
-                    <button onclick="toggleStatus(${Number(user.id)})" class="inline-flex items-center gap-1 bg-red-50 text-[#800000] border border-red-200 hover:bg-[#800000] hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-bold transition shadow-sm">
-                        <i class="fas ${user.status === 'Active' ? 'fa-ban' : 'fa-check-circle'}"></i> ${user.status === 'Active' ? 'Suspend' : 'Activate'}
-                    </button>
-                    <button onclick="deleteUser(${Number(user.id)})" class="inline-flex items-center gap-1 bg-red-50 text-[#800000] border border-red-200 hover:bg-[#800000] hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-bold transition shadow-sm">
-                        <i class="fas fa-trash-alt"></i> Delete
-                    </button>
-                </div>
-            </td>
-        </tr>
-    `).join('');
-}
+                </td>
+                <td class="px-5 py-4 text-sm font-medium text-gray-700">${escapeHtml(user.role)}</td>
+                <td class="px-5 py-4 text-sm text-gray-700">${escapeHtml(user.unit || 'Unassigned')}</td>
+                <td class="px-5 py-4">
+                    <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ${user.status === 'Active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">${escapeHtml(user.status)}</span>
+                </td>
+                <td class="px-5 py-4 text-right">
+                    <div class="inline-flex items-center gap-2">
+                        <button onclick="openAccountModal(${Number(user.id)})" class="inline-flex items-center gap-1 bg-red-50 text-[#800000] border border-red-200 hover:bg-[#800000] hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-bold transition shadow-sm">
+                            <i class="fas fa-edit"></i> Edit
+                        </button>
+                        <button onclick="toggleStatus(${Number(user.id)})" class="inline-flex items-center gap-1 bg-red-50 text-[#800000] border border-red-200 hover:bg-[#800000] hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-bold transition shadow-sm">
+                            <i class="fas ${user.status === 'Active' ? 'fa-ban' : 'fa-check-circle'}"></i> ${user.status === 'Active' ? 'Suspend' : 'Activate'}
+                        </button>
+                        <button onclick="deleteUser(${Number(user.id)})" class="inline-flex items-center gap-1 bg-red-50 text-[#800000] border border-red-200 hover:bg-[#800000] hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-bold transition shadow-sm">
+                            <i class="fas fa-trash-alt"></i> Delete
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+    }
 
-function openAccountModal(userId = null) {
-    const user = userId ? users.find(item => Number(item.id) === Number(userId)) : null;
-    document.getElementById('accountModalTitle').textContent = user ? 'Edit Account' : 'Add Account';
-    document.getElementById('formAction').value = user ? 'edit' : 'add';
-    document.getElementById('userId').value = user?.id || '';
-    document.getElementById('userName').value = user?.name || '';
-    document.getElementById('userEmail').value = user?.email || '';
-    document.getElementById('userRole').value = user?.role || 'Office';
-    document.getElementById('userOffice').value = user?.office_id || (offices[0]?.office_id || '');
-    
-    // Set default password to 'password'
-    const passInput = document.getElementById('userPassword');
-    const confirmInput = document.getElementById('userConfirmPassword');
-    passInput.value = 'password';
-    confirmInput.value = 'password';
-    
-    // Make passwords visible by default when opening modal
-    passInput.type = 'text';
-    confirmInput.type = 'text';
-    
-    // Reset eye icons to eye-slash (visible) state
-    const eye1 = document.getElementById('eyeIcon1');
-    const eye2 = document.getElementById('eyeIcon2');
-    if (eye1) {
-        eye1.className = 'fas fa-eye-slash text-sm';
-    }
-    if (eye2) {
-        eye2.className = 'fas fa-eye-slash text-sm';
-    }
-    
-    if (user) {
-        passInput.required = false;
-        confirmInput.required = false;
-        document.getElementById('passwordNotice').textContent = "Default password is 'password'. Modify to change the user's password.";
-    } else {
-        passInput.required = true;
-        confirmInput.required = true;
-        document.getElementById('passwordNotice').textContent = "Default password is set to 'password'. Modify if needed (minimum 6 characters).";
-    }
-    
-    openModal('accountModal');
-}
-
-function togglePasswordVisibility(inputId, eyeIconId) {
-    const input = document.getElementById(inputId);
-    const icon = document.getElementById(eyeIconId);
-    if (input && icon) {
-        if (input.type === 'password') {
-            input.type = 'text';
-            icon.classList.remove('fa-eye');
-            icon.classList.add('fa-eye-slash');
+    function openAccountModal(userId = null) {
+        const user = userId ? users.find(item => Number(item.id) === Number(userId)) : null;
+        document.getElementById('accountModalTitle').innerHTML = user ? '<i class="fas fa-user-circle"></i> Edit Account' : '<i class="fas fa-user-circle"></i> Add Account';
+        document.getElementById('formAction').value = user ? 'edit' : 'add';
+        document.getElementById('userId').value = user?.id || '';
+        document.getElementById('userName').value = user?.name || '';
+        document.getElementById('userEmail').value = user?.email || '';
+        document.getElementById('userRole').value = user?.role || 'Office';
+        document.getElementById('userOffice').value = user?.office_id || '';
+        
+        const passInput = document.getElementById('userPassword');
+        const confirmInput = document.getElementById('userConfirmPassword');
+        
+        if (user) {
+            passInput.value = '';
+            confirmInput.value = '';
+            passInput.required = false;
+            confirmInput.required = false;
+            document.getElementById('passwordNotice').textContent = "Leave blank to keep the current password. Enter a new password to change it.";
         } else {
-            input.type = 'password';
-            icon.classList.remove('fa-eye-slash');
-            icon.classList.add('fa-eye');
+            passInput.value = 'password';
+            confirmInput.value = 'password';
+            passInput.required = true;
+            confirmInput.required = true;
+            document.getElementById('passwordNotice').textContent = "Default password is set to 'password'. Modify if needed (minimum 6 characters).";
+        }
+        
+        passInput.type = 'password';
+        confirmInput.type = 'password';
+        
+        const eye1 = document.getElementById('eyeIcon1');
+        const eye2 = document.getElementById('eyeIcon2');
+        if (eye1) {
+            eye1.className = 'fas fa-eye text-sm';
+        }
+        if (eye2) {
+            eye2.className = 'fas fa-eye text-sm';
+        }
+        
+        openModal('accountModal');
+    }
+
+    function togglePasswordVisibility(inputId, eyeIconId) {
+        const input = document.getElementById(inputId);
+        const icon = document.getElementById(eyeIconId);
+        if (input && icon) {
+            if (input.type === 'password') {
+                input.type = 'text';
+                icon.classList.remove('fa-eye');
+                icon.classList.add('fa-eye-slash');
+            } else {
+                input.type = 'password';
+                icon.classList.remove('fa-eye-slash');
+                icon.classList.add('fa-eye');
+            }
         }
     }
-}
 
-document.getElementById('accountForm').onsubmit = async function(event) {
-    event.preventDefault();
-    const pass = document.getElementById('userPassword').value;
-    const conf = document.getElementById('userConfirmPassword').value;
-    const action = document.getElementById('formAction').value;
-    
-    if (action === 'add' || pass !== '') {
-        if (pass.length < 6) {
-            alert("Password must be at least 6 characters!");
+    document.getElementById('accountForm').onsubmit = async function(event) {
+        event.preventDefault();
+        const pass = document.getElementById('userPassword').value;
+        const conf = document.getElementById('userConfirmPassword').value;
+        const action = document.getElementById('formAction').value;
+        
+        if (action === 'add' || pass !== '') {
+            if (pass.length < 6) {
+                alert("Password must be at least 6 characters!");
+                return;
+            }
+            if (pass !== conf) {
+                alert("Passwords do not match!");
+                return;
+            }
+        }
+        
+        const formData = new FormData(event.target);
+        const res = await fetch('manage_accounts.php', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!data.success) {
+            alert(data.message);
             return;
         }
-        if (pass !== conf) {
-            alert("Passwords do not match!");
-            return;
-        }
+        closeModal('accountModal');
+        await fetchUsers();
+    };
+
+    async function toggleStatus(id) {
+        const formData = new FormData();
+        formData.append('action', 'toggleStatus');
+        formData.append('id', id);
+        const res = await fetch('manage_accounts.php', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (data.success) fetchUsers();
     }
-    
-    const formData = new FormData(event.target);
-    const res = await fetch('manage_accounts.php', { method: 'POST', body: formData });
-    const data = await res.json();
-    if (!data.success) {
-        alert(data.message);
-        return;
+
+    async function deleteUser(id) {
+        showThemeConfirm('Permanently delete this account?', async () => {
+            const formData = new FormData();
+            formData.append('action', 'delete');
+            formData.append('id', id);
+            try {
+                const res = await fetch('manage_accounts.php', { method: 'POST', body: formData });
+                const data = await res.json();
+                if (data.success) {
+                    fetchUsers();
+                } else {
+                    showThemeAlert('Failed to delete account: ' + data.message);
+                }
+            } catch (err) {
+                showThemeAlert('An error occurred while deleting the account.');
+            }
+        });
     }
-    closeModal('accountModal');
-    await fetchUsers();
-};
 
-async function toggleStatus(id) {
-    const formData = new FormData();
-    formData.append('action', 'toggleStatus');
-    formData.append('id', id);
-    const res = await fetch('manage_accounts.php', { method: 'POST', body: formData });
-    const data = await res.json();
-    if (data.success) fetchUsers();
-}
-
-async function deleteUser(id) {
-    if (!confirm('Permanently delete this account?')) return;
-    const formData = new FormData();
-    formData.append('action', 'delete');
-    formData.append('id', id);
-    const res = await fetch('manage_accounts.php', { method: 'POST', body: formData });
-    const data = await res.json();
-    if (data.success) fetchUsers();
-}
-
-function openModal(id) {
-    document.getElementById(id).classList.remove('hidden');
-    document.getElementById(id).classList.add('flex');
-}
-
-function closeModal(id) {
-    document.getElementById(id).classList.add('hidden');
-    document.getElementById(id).classList.remove('flex');
-}
-
-const profileBtn = document.getElementById('profile-btn');
-const profileDropdown = document.getElementById('profile-dropdown');
-if (profileBtn && profileDropdown) {
-    profileBtn.addEventListener('click', function() {
-        profileDropdown.classList.toggle('active');
-    });
-    document.addEventListener('click', function(event) {
-        if (!event.target.closest('#profile-btn') && !event.target.closest('#profile-dropdown')) {
-            profileDropdown.classList.remove('active');
+    function openModal(id) {
+        const modal = document.getElementById(id);
+        if (modal) {
+            document.body.appendChild(modal);
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
         }
-    });
-}
+        document.body.classList.add('overflow-hidden');
+        document.querySelectorAll('.overflow-auto').forEach(el => {
+            el.dataset.prevOverflow = el.style.overflow || '';
+            el.style.setProperty('overflow', 'hidden', 'important');
+        });
+    }
 
-fetchOffices().then(fetchUsers);
+    function closeModal(id) {
+        const modal = document.getElementById(id);
+        const main = document.querySelector('main');
+        if (modal) {
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+            if (main) {
+                main.appendChild(modal);
+            }
+        }
+        document.body.classList.remove('overflow-hidden');
+        document.querySelectorAll('.overflow-auto').forEach(el => {
+            el.style.overflow = el.dataset.prevOverflow || '';
+        });
+    }
+
+    // Expose functions to window scope for inline HTML handlers
+    window.openAccountModal = openAccountModal;
+    window.toggleStatus = toggleStatus;
+    window.deleteUser = deleteUser;
+    window.openModal = openModal;
+    window.closeModal = closeModal;
+    window.togglePasswordVisibility = togglePasswordVisibility;
+    window.renderTable = renderTable;
+
+    document.getElementById('searchInput')?.addEventListener('input', renderTable);
+
+    fetchOffices().then(fetchUsers);
+})();
 </script>
 </body>
 </html>

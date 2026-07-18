@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../includes/system_settings.php';
 
 header('Content-Type: application/json');
 
@@ -47,7 +48,8 @@ function notifyAllUnits($conn, $title, $message, $type, $target_url = null, $tar
 }
 
 function is_valid_year($year) {
-    return preg_match('/^\d{4}$/', (string)$year) === 1;
+    // Accepts academic year ranges like 2026-2027
+    return preg_match('/^\d{4}-\d{4}$/', (string)$year) === 1;
 }
 
 switch ($action) {
@@ -62,7 +64,7 @@ switch ($action) {
     case 'add_academic_year':
         $year = $input['year_range'] ?? '';
         if (!is_valid_year($year)) {
-            echo json_encode(['success' => false, 'error' => 'Academic year must be a 4-digit year, e.g. 2026.']);
+            echo json_encode(['success' => false, 'error' => 'Academic year must be a valid 4-digit year or range, e.g. 2026-2027.']);
         } elseif ($year) {
             $stmt = $conn->prepare("INSERT INTO academic_years (year_range) VALUES (?)");
             $stmt->bind_param("s", $year);
@@ -103,13 +105,8 @@ switch ($action) {
         }
         
         // 1. Update system_settings
-        $stmt1 = $conn->prepare("UPDATE system_settings SET setting_value = ? WHERE setting_key = 'active_academic_year'");
-        $stmt1->bind_param("s", $active_ay_val);
-        $stmt1->execute();
-        
-        $stmt2 = $conn->prepare("UPDATE system_settings SET setting_value = ? WHERE setting_key = 'active_semester'");
-        $stmt2->bind_param("s", $active_quarter_val);
-        $stmt2->execute();
+        ua_qms_upsert_system_setting($conn, 'active_academic_year', $active_ay_val);
+        ua_qms_upsert_system_setting($conn, 'active_semester', $active_quarter_val);
         
         // 2. Sync academic_years is_active flag
         $conn->query("UPDATE academic_years SET is_active = 0");
@@ -132,11 +129,14 @@ switch ($action) {
         break;
 
     case 'get_system_settings':
+        $period = ua_qms_get_active_period($conn);
         $res = $conn->query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('active_academic_year', 'active_semester', 'maintenance_mode')");
         $settings = [];
         while ($row = $res->fetch_assoc()) {
             $settings[$row['setting_key']] = $row['setting_value'];
         }
+        $settings['active_academic_year'] = $period['active_year'];
+        $settings['active_semester'] = $period['active_semester'];
         echo json_encode(['success' => true, 'data' => $settings]);
         break;
 
@@ -144,7 +144,7 @@ switch ($action) {
         $id = $input['ay_id'] ?? 0;
         $year = $input['year_range'] ?? '';
         if (!is_valid_year($year)) {
-            echo json_encode(['success' => false, 'error' => 'Academic year must be a 4-digit year, e.g. 2026.']);
+            echo json_encode(['success' => false, 'error' => 'Academic year must be a valid 4-digit year or range, e.g. 2026-2027.']);
         } elseif ($id && $year) {
             $stmt = $conn->prepare("UPDATE academic_years SET year_range = ? WHERE ay_id = ?");
             $stmt->bind_param("si", $year, $id);
@@ -159,7 +159,6 @@ switch ($action) {
         }
         break;
 
-    // --- Submission Deadlines ---
     case 'get_submission_deadlines':
         $year = (is_array($input) ? ($input['year'] ?? '') : '') ?: ($_GET['year'] ?? '');
         $where = '';
@@ -181,35 +180,73 @@ switch ($action) {
         break;
 
     case 'add_submission_deadline':
-        $doc_type_id = (int)($input['doc_type_id'] ?? 0);
+        $doc_type_id_raw = $input['doc_type_id'] ?? '';
         $quarter = $input['quarter'] ?? '';
         $year = $input['year'] ?? '';
         $deadline = $input['deadline'] ?? '';
         $valid_quarters = ['1st Quarter', '2nd Quarter', '3rd Quarter', '4th Quarter'];
 
-        if (!$doc_type_id || !in_array($quarter, $valid_quarters, true) || !is_valid_year($year) || !$deadline) {
-            echo json_encode(['success' => false, 'error' => 'Document type, quarter, 4-digit year, and deadline are required.']);
+        if (!$doc_type_id_raw || !in_array($quarter, $valid_quarters, true) || !is_valid_year($year) || !$deadline) {
+            echo json_encode(['success' => false, 'error' => 'Document type, quarter, academic year, and deadline are required.']);
             break;
         }
 
-        $stmt = $conn->prepare("INSERT INTO target_submissions (doc_type_id, quarter, year, deadline) VALUES (?, ?, ?, ?)");
-        $stmt->bind_param("isss", $doc_type_id, $quarter, $year, $deadline);
-        if ($stmt->execute()) {
-            // Retrieve document type code
-            $doc_code = "Document";
-            $dt_res = $conn->query("SELECT doc_code FROM document_types WHERE doc_type_id = $doc_type_id");
-            if ($dt_res && $dt_row = $dt_res->fetch_assoc()) {
-                $doc_code = $dt_row['doc_code'];
+        if ($doc_type_id_raw === 'all') {
+            // Get all document types
+            $dt_res = $conn->query("SELECT doc_type_id, doc_code FROM document_types");
+            if ($dt_res) {
+                $conn->begin_transaction();
+                try {
+                    while ($dt_row = $dt_res->fetch_assoc()) {
+                        $doc_id = (int)$dt_row['doc_type_id'];
+                        // Delete existing to prevent duplication
+                        $conn->query("DELETE FROM target_submissions WHERE doc_type_id = $doc_id AND quarter = '$quarter' AND year = '$year'");
+                        
+                        $stmt = $conn->prepare("INSERT INTO target_submissions (doc_type_id, quarter, year, deadline) VALUES (?, ?, ?, ?)");
+                        $stmt->bind_param("isss", $doc_id, $quarter, $year, $deadline);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
+                    
+                    $deadline_formatted = date('F d, Y', strtotime($deadline));
+                    $notif_title = "Submission Deadlines Set ($quarter $year)";
+                    $notif_msg = "Submission deadlines for all document types have been set for $quarter $year on $deadline_formatted. Please submit your files accordingly.";
+                    notifyAllUnits($conn, $notif_title, $notif_msg, 'Deadline', 'dashboard/dean/submit_document.php', 'submission');
+                    
+                    addLog($conn, "Added Submission Deadlines (All)", "Added deadline for all document types, $quarter $year: $deadline");
+                    $conn->commit();
+                    echo json_encode(['success' => true]);
+                } catch (Exception $e) {
+                    $conn->rollback();
+                    echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+                }
+            } else {
+                echo json_encode(['success' => false, 'error' => 'Could not fetch document types.']);
             }
-            $deadline_formatted = date('F d, Y', strtotime($deadline));
-            $notif_title = "New Deadline Set: $doc_code";
-            $notif_msg = "A new submission deadline has been set for $doc_code ($quarter $year) on $deadline_formatted. Please submit your files accordingly.";
-            notifyAllUnits($conn, $notif_title, $notif_msg, 'Deadline', 'dashboard/dean/submit_document.php', 'submission');
-
-            addLog($conn, "Added Submission Deadline", "Added deadline for document type ID $doc_type_id, $quarter $year: $deadline");
-            echo json_encode(['success' => true]);
         } else {
-            echo json_encode(['success' => false, 'error' => $conn->error]);
+            $doc_type_id = (int)$doc_type_id_raw;
+            // Delete existing to prevent duplication
+            $conn->query("DELETE FROM target_submissions WHERE doc_type_id = $doc_type_id AND quarter = '$quarter' AND year = '$year'");
+
+            $stmt = $conn->prepare("INSERT INTO target_submissions (doc_type_id, quarter, year, deadline) VALUES (?, ?, ?, ?)");
+            $stmt->bind_param("isss", $doc_type_id, $quarter, $year, $deadline);
+            if ($stmt->execute()) {
+                // Retrieve document type code
+                $doc_code = "Document";
+                $dt_res = $conn->query("SELECT doc_code FROM document_types WHERE doc_type_id = $doc_type_id");
+                if ($dt_res && $dt_row = $dt_res->fetch_assoc()) {
+                    $doc_code = $dt_row['doc_code'];
+                }
+                $deadline_formatted = date('F d, Y', strtotime($deadline));
+                $notif_title = "New Deadline Set: $doc_code";
+                $notif_msg = "A new submission deadline has been set for $doc_code ($quarter $year) on $deadline_formatted. Please submit your files accordingly.";
+                notifyAllUnits($conn, $notif_title, $notif_msg, 'Deadline', 'dashboard/dean/submit_document.php', 'submission');
+
+                addLog($conn, "Added Submission Deadline", "Added deadline for document type ID $doc_type_id, $quarter $year: $deadline");
+                echo json_encode(['success' => true]);
+            } else {
+                echo json_encode(['success' => false, 'error' => $conn->error]);
+            }
         }
         break;
 
@@ -222,7 +259,7 @@ switch ($action) {
         $valid_quarters = ['1st Quarter', '2nd Quarter', '3rd Quarter', '4th Quarter'];
 
         if (!$target_id || !$doc_type_id || !in_array($quarter, $valid_quarters, true) || !is_valid_year($year) || !$deadline) {
-            echo json_encode(['success' => false, 'error' => 'Deadline ID, document type, quarter, 4-digit year, and deadline are required.']);
+            echo json_encode(['success' => false, 'error' => 'Deadline ID, document type, quarter, academic year, and deadline are required.']);
             break;
         }
 
@@ -253,26 +290,36 @@ switch ($action) {
             echo json_encode(['success' => false, 'error' => 'Missing deadline ID.']);
             break;
         }
-        $stmt = $conn->prepare("DELETE FROM target_submissions WHERE target_id = ?");
-        $stmt->bind_param("i", $target_id);
-        if ($stmt->execute()) {
-            addLog($conn, "Deleted Submission Deadline", "Deleted deadline ID $target_id");
-            echo json_encode(['success' => true]);
-        } else {
-            echo json_encode(['success' => false, 'error' => $conn->error]);
+        try {
+            $stmt = $conn->prepare("DELETE FROM target_submissions WHERE target_id = ?");
+            $stmt->bind_param("i", $target_id);
+            if ($stmt->execute()) {
+                addLog($conn, "Deleted Submission Deadline", "Deleted deadline ID $target_id");
+                echo json_encode(['success' => true]);
+            } else {
+                echo json_encode(['success' => false, 'error' => $stmt->error]);
+            }
+            $stmt->close();
+        } catch (mysqli_sql_exception $e) {
+            echo json_encode(['success' => false, 'error' => $e->getMessage()]);
         }
         break;
 
     case 'delete_academic_year':
         $id = $input['ay_id'] ?? 0;
         if ($id) {
-            $stmt = $conn->prepare("DELETE FROM academic_years WHERE ay_id = ?");
-            $stmt->bind_param("i", $id);
-            if ($stmt->execute()) {
-                addLog($conn, "Deleted Academic Year", "Deleted Academic Year ID $id");
-                echo json_encode(['success' => true]);
-            } else {
-                echo json_encode(['success' => false, 'error' => $conn->error]);
+            try {
+                $stmt = $conn->prepare("DELETE FROM academic_years WHERE ay_id = ?");
+                $stmt->bind_param("i", $id);
+                if ($stmt->execute()) {
+                    addLog($conn, "Deleted Academic Year", "Deleted Academic Year ID $id");
+                    echo json_encode(['success' => true]);
+                } else {
+                    echo json_encode(['success' => false, 'error' => $stmt->error]);
+                }
+                $stmt->close();
+            } catch (mysqli_sql_exception $e) {
+                echo json_encode(['success' => false, 'error' => $e->getMessage()]);
             }
         } else {
             echo json_encode(['success' => false, 'error' => 'Missing ID']);
@@ -367,11 +414,22 @@ switch ($action) {
 
     case 'delete_document_type':
         $id = $input['doc_type_id'] ?? 0;
-        $stmt = $conn->prepare("DELETE FROM document_types WHERE doc_type_id = ?");
-        $stmt->bind_param("i", $id);
-        if ($stmt->execute()) {
-            addLog($conn, "Deleted Document Type", "Deleted ID $id");
-            echo json_encode(['success' => true]);
+        if ($id) {
+            try {
+                $stmt = $conn->prepare("DELETE FROM document_types WHERE doc_type_id = ?");
+                $stmt->bind_param("i", $id);
+                if ($stmt->execute()) {
+                    addLog($conn, "Deleted Document Type", "Deleted ID $id");
+                    echo json_encode(['success' => true]);
+                } else {
+                    echo json_encode(['success' => false, 'error' => $stmt->error]);
+                }
+                $stmt->close();
+            } catch (mysqli_sql_exception $e) {
+                echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+            }
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Missing ID']);
         }
         break;
 
@@ -441,13 +499,18 @@ switch ($action) {
     case 'delete_office':
         $id = $input['office_id'] ?? 0;
         if ($id) {
-            $stmt = $conn->prepare("DELETE FROM offices WHERE office_id = ?");
-            $stmt->bind_param("i", $id);
-            if ($stmt->execute()) {
-                addLog($conn, "Deleted Office", "Deleted Office ID $id");
-                echo json_encode(['success' => true]);
-            } else {
-                echo json_encode(['success' => false, 'error' => $conn->error]);
+            try {
+                $stmt = $conn->prepare("DELETE FROM offices WHERE office_id = ?");
+                $stmt->bind_param("i", $id);
+                if ($stmt->execute()) {
+                    addLog($conn, "Deleted Office", "Deleted Office ID $id");
+                    echo json_encode(['success' => true]);
+                } else {
+                    echo json_encode(['success' => false, 'error' => $stmt->error]);
+                }
+                $stmt->close();
+            } catch (mysqli_sql_exception $e) {
+                echo json_encode(['success' => false, 'error' => $e->getMessage()]);
             }
         } else {
             echo json_encode(['success' => false, 'error' => 'Missing ID']);

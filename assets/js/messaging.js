@@ -50,12 +50,12 @@ const Messaging = {
         if (document.getElementById('messaging-modal')) return;
 
         const modalHtml = `
-            <div id="messaging-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex items-center justify-center p-0 md:p-4 transition-opacity duration-300 opacity-0">
-                <div id="messaging-container" class="bg-white rounded-none md:rounded-xl shadow-2xl w-full max-w-4xl h-full md:h-[600px] flex flex-col overflow-hidden transform scale-95 transition-transform duration-300">
+            <div id="messaging-modal" class="fixed inset-0 bg-black bg-opacity-50 z-[9999] hidden flex items-center justify-center p-0 md:p-4 transition-opacity duration-300 opacity-0">
+                <div id="messaging-container" class="bg-white rounded-none md:rounded-xl shadow-2xl w-full max-w-4xl h-full md:h-[620px] flex flex-col overflow-hidden transform scale-95 transition-transform duration-300">
                     <!-- Modal Header -->
                     <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-[#800000] text-white flex-shrink-0">
-                        <h2 class="text-xl font-bold flex items-center gap-2">
-                            <i class="fas fa-bug"></i> Kasubay Messenger
+                        <h2 class="text-lg font-bold flex items-center gap-2">
+                            <i class="fas fa-comments"></i> Kasubay Messenger
                         </h2>
                         <button onclick="Messaging.toggleModal()" class="text-white hover:text-gray-200 transition p-1">
                             <i class="fas fa-times text-xl"></i>
@@ -209,17 +209,19 @@ const Messaging = {
                     let html = '';
                     data.conversations.forEach(conv => {
                         const isCurrent = this.currentConversationId == conv.conversation_id;
-                        const unreadClass = conv.unread_count > 0 
-                            ? 'font-bold bg-red-50/60 border-l-4 border-ua-maroon' 
-                            : (isCurrent ? 'bg-gray-100 border-l-4 border-gray-400' : 'bg-transparent');
+                        const itemClass = isCurrent 
+                            ? 'bg-red-50/50 text-[#800000] border-l-4 border-[#800000] font-semibold' 
+                            : (conv.unread_count > 0 
+                                ? 'bg-amber-50/40 border-l-4 border-amber-500 font-bold' 
+                                : 'hover:bg-gray-100/80 border-l-4 border-transparent');
                         html += `
-                            <div onclick="Messaging.viewConversation(${conv.conversation_id}, true)" class="p-4 border-b border-gray-200 cursor-pointer hover:bg-gray-50 transition ${unreadClass}">
-                                <div class="flex justify-between items-center mb-1">
-                                    <span class="text-gray-900 text-sm font-semibold">${conv.last_message_sender_name}</span>
-                                    <span class="text-[10px] text-gray-400">${new Date(conv.last_message_at).toLocaleDateString()}</span>
+                            <div onclick="Messaging.viewConversation(${conv.conversation_id}, true)" class="mx-2 my-1.5 p-3.5 rounded-xl cursor-pointer transition-all duration-200 flex flex-col gap-1 border border-gray-100 shadow-sm ${itemClass}">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-gray-900 text-xs font-bold truncate max-w-[150px]">${conv.last_message_sender_name}</span>
+                                    <span class="text-[9px] text-gray-400 font-medium">${new Date(conv.last_message_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                                 </div>
-                                <p class="text-xs text-gray-500 truncate">${conv.last_message_text}</p>
-                                ${conv.unread_count > 0 ? `<span class="mt-1 inline-block text-[10px] text-white bg-ua-maroon px-2 py-0.5 rounded-full font-bold">${conv.unread_count} New</span>` : ''}
+                                <p class="text-xs text-gray-500 truncate leading-relaxed">${conv.last_message_text}</p>
+                                ${conv.unread_count > 0 ? `<div class="flex justify-end"><span class="text-[8px] text-white bg-amber-600 px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider">${conv.unread_count} New</span></div>` : ''}
                             </div>
                         `;
                     });
@@ -235,7 +237,12 @@ const Messaging = {
         const content = document.getElementById('messaging-content');
         if (!content) return;
         
-        content.innerHTML = '<div class="flex justify-center py-10"><i class="fas fa-spinner fa-spin text-3xl text-ua-maroon"></i></div>';
+        const chatThread = document.getElementById('chat-thread');
+        const isAlreadyOpen = chatThread && document.getElementById('chat-form') && document.querySelector('input[name="conversation_id"]')?.value == conversationId;
+        
+        if (!isAlreadyOpen && markAsRead) {
+            content.innerHTML = '<div class="flex justify-center py-10"><i class="fas fa-spinner fa-spin text-3xl text-ua-maroon"></i></div>';
+        }
 
         fetch(`${this.apiPath}?action=get_messages&conversation_id=${conversationId}&_t=` + Date.now(), { cache: 'no-store' })
             .then(res => res.json())
@@ -251,9 +258,9 @@ const Messaging = {
                         const senderName = isSender ? 'You' : msg.sender_name;
                         let attachmentHtml = '';
                         if (msg.attachment_path) {
-                            const isImage = msg.attachment_path.match(/\.(jpeg|jpg|gif|png)$/i) != null;
+                            const isImage = msg.attachment_path.match(/\.(jpeg|jpg|gif|png|webp)$/i) != null;
                             if (isImage) {
-                                attachmentHtml = `<div class="mt-2 mb-1"><img src="../../${msg.attachment_path}" class="max-w-full rounded-lg shadow-sm border border-black/10" style="max-height: 200px;" alt="Attachment" /></div>`;
+                                attachmentHtml = `<div class="mt-2 mb-1"><a href="../../${msg.attachment_path}" target="_blank" class="block overflow-hidden rounded-lg hover:opacity-95 transition-opacity"><img src="../../${msg.attachment_path}" class="max-w-full rounded-lg shadow-sm border border-black/10 hover:scale-[1.02] transition-transform duration-200" style="max-height: 200px;" alt="Attachment" /></a></div>`;
                             } else {
                                 const fileName = msg.attachment_path.split('/').pop();
                                 attachmentHtml = `<div class="mt-2 mb-1"><a href="../../${msg.attachment_path}" target="_blank" class="flex items-center gap-2 bg-black/10 hover:bg-black/20 text-current p-2 rounded-lg text-xs transition"><i class="fas fa-file-alt"></i> ${fileName}</a></div>`;
@@ -272,53 +279,54 @@ const Messaging = {
                         lastMessageId = msg.message_id;
                     });
 
-                    // Determine conversation partner name safely
-                    let partnerName = "Conversation";
-                    const firstMsg = data.messages[0];
-                    if (firstMsg) {
-                        partnerName = firstMsg.sender_id == currentUserId ? firstMsg.receiver_name : firstMsg.sender_name;
-                    }
+                    const partnerName = data.partner_name || 'Conversation';
 
-                    content.innerHTML = `
-                        <div class="flex flex-col h-full overflow-hidden">
-                            <!-- Header / Back button -->
-                            <div class="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center gap-3 flex-shrink-0">
-                                <button onclick="Messaging.showSidebar()" class="md:hidden p-1.5 text-[#800000] hover:bg-gray-200 rounded-lg transition-colors flex items-center gap-1 text-sm font-bold">
-                                    <i class="fas fa-chevron-left"></i> Back
-                                </button>
-                                <div class="min-w-0">
-                                    <span class="font-bold text-sm text-gray-800 block truncate">${partnerName}</span>
-                                    <span class="text-[10px] text-green-600 font-semibold flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-green-500"></span> Connected</span>
+                    if (isAlreadyOpen) {
+                        const wasAtBottom = (chatThread.scrollHeight - chatThread.clientHeight - chatThread.scrollTop) < 40;
+                        chatThread.innerHTML = messagesHtml;
+                        if (wasAtBottom) {
+                            chatThread.scrollTop = chatThread.scrollHeight;
+                        }
+                    } else {
+                        content.innerHTML = `
+                            <div class="flex flex-col h-full overflow-hidden">
+                                <!-- Header / Back button -->
+                                <div class="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center gap-3 flex-shrink-0">
+                                    <button onclick="Messaging.showSidebar()" class="md:hidden p-1.5 text-[#800000] hover:bg-gray-200 rounded-lg transition-colors flex items-center gap-1 text-sm font-bold">
+                                        <i class="fas fa-chevron-left"></i> Back
+                                    </button>
+                                    <div class="min-w-0">
+                                        <span class="font-bold text-sm text-gray-800 block truncate">${partnerName}</span>
+                                        <span class="text-[10px] text-green-600 font-semibold flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-green-500"></span> Connected</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="flex-1 overflow-y-auto p-4 md:p-6 space-y-3 bg-gray-50/30" id="chat-thread">
+                                    ${messagesHtml}
+                                </div>
+                                
+                                <div class="p-3 border-t border-gray-200 bg-white flex-shrink-0">
+                                    <div id="attachment-preview" class="hidden mb-2 p-2 bg-gray-50 rounded-lg border border-gray-200 text-xs flex items-center justify-between text-gray-600"></div>
+                                    <form id="chat-form" class="flex gap-2 items-end">
+                                        <input type="hidden" name="conversation_id" value="${conversationId}">
+                                        <div class="relative group h-9 flex items-center">
+                                            <label class="cursor-pointer text-gray-500 hover:text-[#800000] p-2 transition-colors">
+                                                <i class="fas fa-paperclip text-lg"></i>
+                                                <input type="file" name="attachment" class="hidden" accept=".jpg,.jpeg,.png,.gif,.pdf,.doc,.docx" onchange="Messaging.previewAttachment(this)">
+                                            </label>
+                                        </div>
+                                        <textarea name="message_text" rows="1" class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none resize-none max-h-24" placeholder="Type your message..." oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'"></textarea>
+                                        <button type="submit" class="px-4 py-2 bg-[#800000] hover:bg-red-950 text-white rounded-lg font-bold text-sm shadow flex items-center gap-1.5 h-9 flex-shrink-0 transition-colors">
+                                            <i class="fas fa-paper-plane text-xs"></i> Send
+                                        </button>
+                                    </form>
                                 </div>
                             </div>
-                            
-                            <div class="flex-1 overflow-y-auto p-4 md:p-6 space-y-3 bg-gray-50/30" id="chat-thread">
-                                ${messagesHtml}
-                            </div>
-                            
-                            <div class="p-3 border-t border-gray-200 bg-white flex-shrink-0">
-                                <form id="chat-form" class="flex gap-2 items-end">
-                                    <input type="hidden" name="conversation_id" value="${conversationId}">
-                                    <div class="relative group h-9 flex items-center">
-                                        <label class="cursor-pointer text-gray-500 hover:text-[#800000] p-2 transition-colors">
-                                            <i class="fas fa-paperclip text-lg"></i>
-                                            <input type="file" name="attachment" class="hidden" accept=".jpg,.jpeg,.png,.gif,.pdf,.doc,.docx" onchange="Messaging.previewAttachment(this)">
-                                        </label>
-                                    </div>
-                                    <textarea name="message_text" rows="1" class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none resize-none max-h-24" placeholder="Type your message..." oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'"></textarea>
-                                    <button type="submit" class="px-4 py-2 bg-[#800000] hover:bg-red-950 text-white rounded-lg font-bold text-sm shadow flex items-center gap-1.5 h-9 flex-shrink-0 transition-colors">
-                                        <i class="fas fa-paper-plane text-xs"></i> Send
-                                    </button>
-                                </form>
-                                <div id="attachment-preview" class="hidden text-xs text-gray-500 mt-2 ml-10 flex items-center gap-2"></div>
-                            </div>
-                        </div>
-                    `;
-                    
-                    // Scroll to bottom
-                    const chatThread = document.getElementById('chat-thread');
-                    if (chatThread) {
-                        chatThread.scrollTop = chatThread.scrollHeight;
+                        `;
+                        const newChatThread = document.getElementById('chat-thread');
+                        if (newChatThread) {
+                            newChatThread.scrollTop = newChatThread.scrollHeight;
+                        }
                     }
 
                     if (markAsRead && lastMessageId > 0) {
@@ -326,13 +334,14 @@ const Messaging = {
                     }
 
                     const chatForm = document.getElementById('chat-form');
-                    if (chatForm) {
+                    if (chatForm && !isAlreadyOpen) {
                         chatForm.onsubmit = (e) => {
                             e.preventDefault();
                             const formData = new FormData(chatForm);
                             formData.append('action', 'send_message');
                             this.sendMessage(formData);
                             chatForm.reset();
+                            this.clearAttachment();
                         };
                     }
                 }

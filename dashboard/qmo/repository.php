@@ -4,17 +4,19 @@ if(!isset($_SESSION['role']) || $_SESSION['role'] !== 'QMO Admin'){
     header("Location: ../../index.php"); 
     exit();
 }
-require_once "../../config/db.php";
 
-$settings = [];
-$settings_result = $conn->query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('active_academic_year', 'active_semester')");
-if ($settings_result) {
-    while ($row = $settings_result->fetch_assoc()) {
-        $settings[$row['setting_key']] = $row['setting_value'];
+if (!function_exists('h')) {
+    function h($value) {
+        return htmlspecialchars((string) ($value ?? ''), ENT_QUOTES, 'UTF-8');
     }
 }
-$active_year = $settings['active_academic_year'] ?? date('Y') . '-' . (date('Y') + 1);
-$active_semester = $settings['active_semester'] ?? '1st Quarter';
+
+require_once __DIR__ . "/../../config/db.php";
+require_once __DIR__ . "/../../includes/system_settings.php";
+
+$period = ua_qms_get_active_period($conn);
+$active_year = $period['active_year'];
+$active_semester = $period['active_semester'];
 $active_year_display = $active_year;
 if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
     $active_year_display = (string)max(array_map('intval', $matches[0]));
@@ -23,6 +25,7 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="icon" type="image/jpeg" href="../../assets/img/ua-qms-logo.jpg">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UA QMS | Document Repository</title>
@@ -70,14 +73,41 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
         }
         
         @media print {
-            .no-print { display: none; }
+            @page {
+                size: legal landscape; /* Long Bondpaper (8.5in x 14in) */
+                margin: 15mm 15mm 15mm 15mm;
+            }
+            body { background: white !important; color: black !important; font-size: 11px; }
+            .no-print { display: none !important; }
+            .print-only { display: block !important; }
+            main { padding: 0 !important; margin: 0 !important; overflow: visible !important; width: 100% !important; max-width: 100% !important; }
+            .flex-1 { overflow: visible !important; }
+            .overflow-auto { overflow: visible !important; }
+            div.overflow-x-auto { overflow: visible !important; }
+            
+            /* Remove shadows, borders, and rounded corners on container */
+            .bg-white, .rounded-xl, .shadow-sm, .border, .overflow-hidden {
+                border-radius: 0 !important;
+                border: none !important;
+                box-shadow: none !important;
+                background: transparent !important;
+            }
+            
+            /* Plain and formal table styles */
+            table { width: 100% !important; border-collapse: collapse !important; margin-top: 10px !important; border-radius: 0 !important; box-shadow: none !important; }
+            th, td { border: 1px solid #64748b !important; padding: 8px !important; text-align: left !important; color: black !important; border-radius: 0 !important; }
+            th { font-weight: bold !important; text-transform: uppercase !important; font-size: 10px !important; background-color: #f1f5f9 !important; border-bottom: 2px solid black !important; }
+            td { font-size: 10px !important; }
+            span { background: transparent !important; color: black !important; padding: 0 !important; font-weight: normal !important; }
+            td.font-bold, td span.font-bold, td.text-right, td.text-right span { font-weight: bold !important; }
         }
+        .print-only { display: none; }
     </style>
 </head>
 <body class="bg-gray-50">
     <div class="flex h-screen overflow-hidden">
         <!-- Sidebar -->
-        <?php include "../../includes/sidebar_qmo.php"; ?>
+        <?php require_once __DIR__ . "/../../includes/sidebar_qmo.php"; ?>
 
         <!-- Main Content -->
         <main class="flex-1 flex flex-col overflow-hidden">
@@ -103,9 +133,13 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
                         </button>
                         <!-- Profile Dropdown -->
                         <div class="relative">
-                            <button id="profile-btn" class="w-10 h-10 rounded-full bg-[#800000] flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition">
-                                <?php echo isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'; ?>
-                            </button>
+                            <button id="profile-btn" class="w-10 h-10 rounded-full bg-[#800000] flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition overflow-hidden">
+                            <?php if (!empty($_SESSION['profile_photo'])): ?>
+                                <img src="<?php echo htmlspecialchars($_SESSION['profile_photo']); ?>" class="w-full h-full object-cover rounded-full" alt="Profile" />
+                            <?php else: ?>
+                                <?php echo h(isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'); ?>
+                            <?php endif; ?>
+                        </button>
                             <div id="profile-dropdown" class="profile-dropdown">
                                 <div class="profile-dropdown-header">
                                     <p><?php echo htmlspecialchars($_SESSION['full_name'] ?? 'User'); ?></p>
@@ -124,9 +158,26 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
             <div class="flex-1 overflow-auto p-8">
                 <div class="max-w-7xl mx-auto">
 
+                    <!-- Print Only Header -->
+                    <div hidden class="print-only mb-6 text-center">
+                        <div class="flex flex-col items-center justify-center mb-4">
+                            <img src="<?php echo $_SESSION['logo_base64'] ?? ''; ?>" alt="UA Logo" class="w-20 h-20 rounded-full mb-3 border border-gray-300">
+                            <h2 class="text-xl font-bold text-gray-900 uppercase tracking-wide">UNIVERSITY OF ANTIQUE</h2>
+                            <p class="text-sm font-bold text-gray-700">Tario-Lim Memorial Campus</p>
+                            <p class="text-sm text-gray-600">Tibiao, Antique</p>
+                            <p class="text-sm font-bold text-gray-700">Quality Management Office</p>
+                            
+                            <h3 class="text-lg font-bold text-gray-900 mt-6 tracking-wide uppercase">QMS Document Repository Report</h3>
+                            <p class="text-xs text-gray-500 mt-2" id="print-metadata">
+                                <!-- Will be populated dynamically by JS before print -->
+                            </p>
+                        </div>
+                        <hr class="border-t border-black my-4">
+                    </div>
+
 
                      <!-- Statistics Cards -->
-                    <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
+                    <div class="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
                         <div class="bg-white border border-gray-200 rounded-lg p-5">
                             <p class="text-sm font-medium text-gray-500">Total Documents</p>
                             <p id="stat-total" class="mt-2 text-3xl font-bold text-gray-900">0</p>
@@ -160,35 +211,35 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
                                 </div>
                             </div>
 
-                            <!-- Document Type Filter -->
-                            <div class="w-full xl:flex-1 min-w-[100px]">
-                                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Doc Type</label>
-                                <select id="doc-type-filter" class="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none text-xs">
-                                    <option value="">All Types</option>
-                                </select>
-                            </div>
-
-                            <!-- Office Filter -->
-                            <div class="w-full xl:flex-1 min-w-[100px]">
-                                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Office</label>
-                                <select id="office-filter" class="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none text-xs">
-                                    <option value="">All Offices</option>
-                                </select>
-                            </div>
-
                             <!-- Academic Year Filter -->
                             <div class="w-full xl:flex-1 min-w-[100px]">
-                                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Year</label>
+                                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Academic Year</label>
                                 <select id="ay-filter" class="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none text-xs">
                                     <option value="">All Years</option>
                                 </select>
                             </div>
 
-                            <!-- Quarter Filter -->
+                            <!-- Period Filter -->
                             <div class="w-full xl:flex-1 min-w-[100px]">
                                 <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Period</label>
                                 <select id="semester-filter" class="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none text-xs">
-                                    <option value="">All Quarters</option>
+                                    <option value="">All Periods</option>
+                                </select>
+                            </div>
+
+                            <!-- Office / Unit Filter -->
+                            <div class="w-full xl:flex-1 min-w-[100px]">
+                                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Office / Unit</label>
+                                <select id="office-filter" class="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none text-xs">
+                                    <option value="">All Offices</option>
+                                </select>
+                            </div>
+
+                            <!-- Document Type Filter -->
+                            <div class="w-full xl:flex-1 min-w-[100px]">
+                                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Document Type</label>
+                                <select id="doc-type-filter" class="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none text-xs">
+                                    <option value="">All Types</option>
                                 </select>
                             </div>
 
@@ -237,7 +288,7 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
                                         <th class="px-6 py-4">Office</th>
                                         <th class="px-6 py-4">Period</th>
                                         <th class="px-6 py-4">Status</th>
-                                        <th class="px-6 py-4 text-right">Actions</th>
+                                        <th class="px-6 py-4 text-right no-print">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody id="documents-container" class="divide-y divide-gray-100">
@@ -257,100 +308,35 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
                             </div>
                         </div>
                     </div>
+            </div>
+
+            <!-- Delete Confirmation Modal -->
+            <div id="delete-confirm-modal" class="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-[9999] flex items-center justify-center hidden opacity-0 transition-opacity duration-300">
+                <div class="bg-white rounded-xl max-w-md w-full mx-4 overflow-hidden shadow-xl transform scale-95 transition-transform duration-300">
+                    <div class="px-6 py-4 bg-[#800000] text-white flex items-center justify-between">
+                        <h3 class="font-bold flex items-center gap-2"><i class="fas fa-exclamation-triangle"></i> Delete Document</h3>
+                        <button onclick="closeDeleteModal()" class="text-white hover:text-gray-200 transition"><i class="fas fa-times"></i></button>
+                    </div>
+                    <div class="p-6">
+                        <p class="text-sm text-gray-500 mb-6">Are you sure you want to delete this document from the repository? This action is permanent, and both the database record and uploaded file will be deleted.</p>
+                        <div class="flex justify-end gap-3">
+                            <button onclick="closeDeleteModal()" class="px-4 py-2 border border-gray-200 text-gray-700 text-sm font-semibold rounded-xl hover:bg-gray-50 transition">
+                                Cancel
+                            </button>
+                            <button id="confirm-delete-btn" class="px-4 py-2 bg-[#800000] text-white text-sm font-semibold rounded-xl hover:bg-[#600000] transition">
+                                Delete
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
+
+            <!-- Universal File Viewer Modal will be injected here by universal-file-viewer.js -->
         </main>
     </div>
 
-    <!-- Profile Dropdown Styles -->
-    <style>
-        .profile-dropdown {
-            display: none;
-            position: absolute;
-            top: 100%;
-            right: 0;
-            background: white;
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-            z-index: 50;
-            min-width: 220px;
-            margin-top: 8px;
-        }
-        .profile-dropdown.active {
-            display: block;
-        }
-        .profile-dropdown-header {
-            padding: 12px 16px;
-            border-bottom: 1px solid #e5e7eb;
-        }
-        .profile-dropdown-header p {
-            margin: 0;
-            font-weight: 600;
-            color: #111827;
-            font-size: 14px;
-        }
-        .profile-dropdown-header span {
-            display: block;
-            font-size: 12px;
-            color: #6b7280;
-            margin-top: 2px;
-        }
-        .profile-dropdown-item {
-            display: flex;
-            align-items: center;
-            padding: 12px 16px;
-            color: #374151;
-            text-decoration: none;
-            transition: background-color 0.2s;
-            border: none;
-            background: none;
-            width: 100%;
-            text-align: left;
-            cursor: pointer;
-            font-size: 14px;
-        }
-        .profile-dropdown-item:hover {
-            background-color: #f3f4f6;
-        }
-        .profile-dropdown-item.logout {
-            color: #dc2626;
-            border-top: 1px solid #e5e7eb;
-        }
-        .profile-dropdown-item.logout:hover {
-            background-color: #fee2e2;
-        }
-        .profile-dropdown-item i {
-            margin-right: 12px;
-            width: 16px;
-            text-align: center;
-        }
-    </style>
-
-    <!-- Delete Confirmation Modal -->
-    <div id="delete-confirm-modal" class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm z-50 flex items-center justify-center hidden opacity-0 transition-opacity duration-300">
-        <div class="bg-white rounded-2xl max-w-md w-full mx-4 overflow-hidden shadow-xl transform scale-95 transition-transform duration-300">
-            <div class="p-6">
-                <div class="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center text-[#800000] mb-4">
-                    <i data-lucide="alert-triangle" class="w-6 h-6"></i>
-                </div>
-                <h3 class="text-lg font-bold text-gray-900 mb-2">Delete Document</h3>
-                <p class="text-sm text-gray-500 mb-6">Are you sure you want to delete this document from the repository? This action is permanent, and both the database record and uploaded file will be deleted.</p>
-                <div class="flex justify-end gap-3">
-                    <button onclick="closeDeleteModal()" class="px-4 py-2 border border-gray-200 text-gray-700 text-sm font-semibold rounded-xl hover:bg-gray-50 transition">
-                        Cancel
-                    </button>
-                    <button id="confirm-delete-btn" class="px-4 py-2 bg-[#800000] text-white text-sm font-semibold rounded-xl hover:bg-[#600000] transition">
-                        Delete
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Universal File Viewer Modal will be injected here by universal-file-viewer.js -->
-
     <script>
+    {
         let currentPage = 1;
         let currentFilters = {
             search: '',
@@ -438,7 +424,7 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
         }
 
         // Load documents with filters
-        async function loadDocuments(page = 1) {
+        async function loadDocuments(page = 1, isSilent = false) {
             currentPage = page;
             const params = new URLSearchParams({
                 action: 'get_repository_documents',
@@ -452,27 +438,39 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
                 limit: 20
             });
 
-            document.getElementById('loading-state').classList.remove('hidden');
-            document.getElementById('documents-container').innerHTML = '';
-            document.getElementById('empty-state').classList.add('hidden');
-            document.getElementById('pagination-container').classList.add('hidden');
+            if (!isSilent) {
+                document.getElementById('loading-state').classList.remove('hidden');
+                document.getElementById('documents-container').innerHTML = '';
+                document.getElementById('empty-state').classList.add('hidden');
+                document.getElementById('pagination-container').classList.add('hidden');
+            }
 
             try {
                 const response = await fetch(`../../api/repository_api.php?${params}`);
                 const data = await response.json();
 
-                document.getElementById('loading-state').classList.add('hidden');
+                if (!isSilent) {
+                    document.getElementById('loading-state').classList.add('hidden');
+                }
 
                 if (data.success && data.documents.length > 0) {
                     renderDocuments(data.documents);
                     renderPagination(data.pagination);
                 } else {
-                    document.getElementById('empty-state').classList.remove('hidden');
+                    if (!isSilent) {
+                        document.getElementById('empty-state').classList.remove('hidden');
+                    } else {
+                        document.getElementById('documents-container').innerHTML = '';
+                        document.getElementById('empty-state').classList.remove('hidden');
+                        document.getElementById('pagination-container').classList.add('hidden');
+                    }
                 }
             } catch (error) {
                 console.error('Error loading documents:', error);
-                document.getElementById('loading-state').classList.add('hidden');
-                document.getElementById('empty-state').classList.remove('hidden');
+                if (!isSilent) {
+                    document.getElementById('loading-state').classList.add('hidden');
+                    document.getElementById('empty-state').classList.remove('hidden');
+                }
             }
         }
 
@@ -513,7 +511,7 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
                     <td class="px-6 py-4">
                         <span class="status-badge ${getStatusClass(doc.status)}">${doc.status}</span>
                     </td>
-                    <td class="px-6 py-4 text-right">
+                    <td class="px-6 py-4 text-right no-print">
                         <div class="flex justify-end gap-2">
                             <button onclick="openUniversalFileViewer(
                                 '${cleanedFilePath.replace(/'/g, "\\'")}',
@@ -546,15 +544,17 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
             }
         }
 
-        // Event listeners
-        document.getElementById('apply-filters-btn').addEventListener('click', () => {
+        function applyFilters() {
             currentFilters.search = document.getElementById('search-input').value;
             currentFilters.doc_type = document.getElementById('doc-type-filter').value;
             currentFilters.office = document.getElementById('office-filter').value;
             currentFilters.academic_year = document.getElementById('ay-filter').value;
             currentFilters.semester = document.getElementById('semester-filter').value;
             loadDocuments(1);
-        });
+        }
+
+        // Event listeners
+        document.getElementById('apply-filters-btn').addEventListener('click', applyFilters);
 
         document.getElementById('reset-filters-btn').addEventListener('click', () => {
             document.getElementById('search-input').value = '';
@@ -577,8 +577,21 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
         // Enter key to search
         document.getElementById('search-input').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
-                document.getElementById('apply-filters-btn').click();
+                applyFilters();
             }
+        });
+
+        // Auto-apply filters on dropdown change
+        document.getElementById('doc-type-filter').addEventListener('change', applyFilters);
+        document.getElementById('office-filter').addEventListener('change', applyFilters);
+        document.getElementById('ay-filter').addEventListener('change', applyFilters);
+        document.getElementById('semester-filter').addEventListener('change', applyFilters);
+
+        // Auto-apply filters on search input with debounce
+        let searchTimeout;
+        document.getElementById('search-input').addEventListener('input', () => {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(applyFilters, 300);
         });
 
         // Helper functions
@@ -606,23 +619,6 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
             return 'status-pending';
         }
 
-        // Profile Dropdown Toggle
-        const profileBtn = document.getElementById('profile-btn');
-        const profileDropdown = document.getElementById('profile-dropdown');
-        
-        if (profileBtn && profileDropdown) {
-            profileBtn.addEventListener('click', function() {
-                profileDropdown.classList.toggle('active');
-            });
-            
-            // Close dropdown when clicking outside
-            document.addEventListener('click', function(event) {
-                if (!event.target.closest('#profile-btn') && !event.target.closest('#profile-dropdown')) {
-                    profileDropdown.classList.remove('active');
-                }
-            });
-        }
-
         // Initialize on page load
         initializeRepository();
 
@@ -634,7 +630,7 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
                 return;
             }
             if (typeof loadDocuments === 'function') {
-                loadDocuments(currentPage);
+                loadDocuments(currentPage, true);
             }
             if (typeof loadStatistics === 'function') {
                 loadStatistics();
@@ -738,6 +734,36 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
                 }, 300);
             }, 3000);
         }
+
+        // Expose functions called by inline event handlers
+        window.confirmDeleteDocument = confirmDeleteDocument;
+        window.closeDeleteModal = closeDeleteModal;
+
+        // Populate print metadata before print
+        window.addEventListener('beforeprint', () => {
+            const ay = document.getElementById('ay-filter').value || 'All Years';
+            const sem = document.getElementById('semester-filter').value || 'All Periods';
+            const officeSelect = document.getElementById('office-filter');
+            const officeText = officeSelect.options[officeSelect.selectedIndex]?.text || 'All Offices';
+            const docTypeSelect = document.getElementById('doc-type-filter');
+            const docTypeText = docTypeSelect.options[docTypeSelect.selectedIndex]?.text || 'All Types';
+            
+            const printMetadata = document.getElementById('print-metadata');
+            if (printMetadata) {
+                printMetadata.innerHTML = `
+                    <strong>Academic Year:</strong> ${escapeHtml(ay)} 
+                    &middot; 
+                    <strong>Period:</strong> ${escapeHtml(sem)} 
+                    &middot; 
+                    <strong>Unit/Office:</strong> ${escapeHtml(officeText)} 
+                    &middot; 
+                    <strong>Document Type:</strong> ${escapeHtml(docTypeText)}
+                    <br>
+                    <strong>Generated:</strong> ${new Date().toLocaleString('en-US', { dateStyle: 'long', timeStyle: 'short' })}
+                `;
+            }
+        });
+    }
     </script>
 </body>
 </html>

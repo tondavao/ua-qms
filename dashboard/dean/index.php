@@ -1,6 +1,7 @@
 <?php
 session_start();
-include "../../config/db.php";
+require_once __DIR__ . "/../../config/db.php";
+require_once __DIR__ . "/../../includes/system_settings.php";
 
 if (!isset($_SESSION['role']) || ($_SESSION['role'] != 'Dean' && $_SESSION['role'] != 'Office')) {
     header('Location: ../../index.php');
@@ -11,15 +12,23 @@ $dean_id = $_SESSION['user_id'];
 $dean_name = $_SESSION['full_name'];
 $office_id = $_SESSION['office_id'] ?? 0;
 
-// Load active academic year and active semester from system configurations
-$sql_settings = "SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('active_academic_year', 'active_semester')";
-$result_settings = $conn->query($sql_settings);
-$settings = [];
-while ($row = $result_settings->fetch_assoc()) {
-    $settings[$row['setting_key']] = $row['setting_value'];
+$user_office_name = "";
+if ($office_id > 0) {
+    $office_stmt = $conn->prepare("SELECT office_code FROM offices WHERE office_id = ?");
+    $office_stmt->bind_param("i", $office_id);
+    $office_stmt->execute();
+    $office_res = $office_stmt->get_result();
+    if ($office_res->num_rows > 0) {
+        $office_row = $office_res->fetch_assoc();
+        $user_office_name = $office_row['office_code'];
+    }
+    $office_stmt->close();
 }
-$active_year = $settings['active_academic_year'] ?? date('Y') . '-' . (date('Y') + 1);
-$active_semester = $settings['active_semester'] ?? '1st Semester';
+
+// Load active academic year and active semester from system configurations
+$period = ua_qms_get_active_period($conn);
+$active_year = $period['active_year'];
+$active_semester = $period['active_semester'];
 
 // Parse active period into date range
 $year_parts = explode('-', $active_year);
@@ -78,11 +87,27 @@ while($row = $result->fetch_assoc()) {
     if($row['status'] == 'Rejected') $stats['rejected'] = $row['count'];
 }
 
-// Calculate completion rate (simplified)
-$total_docs = $stats['approved'] + $stats['pending'] + $stats['revision'];
-if($total_docs > 0) {
-    $stats['completion_rate'] = round(($stats['approved'] / $total_docs) * 100);
-}
+// Calculate completion rate based on QMO compliance logic: (Approved Required Doc Types / Total Required Doc Types)
+$res_req = $conn->query("SELECT COUNT(*) as total_req FROM document_types WHERE required = 'Yes'");
+$total_required_docs = ($res_req && $row_req = $res_req->fetch_assoc()) ? (int)$row_req['total_req'] : 8;
+
+$stmt_app = $conn->prepare("
+    SELECT COUNT(DISTINCT d.doc_type_id) as approved_count 
+    FROM documents d
+    JOIN document_types dt ON d.doc_type_id = dt.doc_type_id
+    WHERE d.office_id = ? 
+      AND d.status = 'Approved' 
+      AND d.academic_year = ? 
+      AND d.semester = ? 
+      AND dt.required = 'Yes'
+");
+$stmt_app->bind_param("iss", $office_id, $active_year, $active_semester);
+$stmt_app->execute();
+$res_app = $stmt_app->get_result()->fetch_assoc();
+$approved_required_count = (int)($res_app['approved_count'] ?? 0);
+$stmt_app->close();
+
+$stats['completion_rate'] = $total_required_docs > 0 ? round(($approved_required_count / $total_required_docs) * 100) : 0;
 
 // Fetch Upcoming Deadlines from target_submissions filtered by target year
 $deadlines = [];
@@ -92,7 +117,7 @@ $sql_deadlines = "SELECT ts.deadline, dt.doc_code, dt.description
                   WHERE ts.year = ? AND ts.deadline >= CURDATE() 
                   ORDER BY ts.deadline ASC LIMIT 3";
 $stmt_deadlines = $conn->prepare($sql_deadlines);
-$stmt_deadlines->bind_param("i", $target_year);
+$stmt_deadlines->bind_param("s", $active_year);
 $stmt_deadlines->execute();
 $res_deadlines = $stmt_deadlines->get_result();
 while($row = $res_deadlines->fetch_assoc()) {
@@ -117,18 +142,46 @@ while($row = $res_rev->fetch_assoc()) {
 }
 // Fetch Announcements
 $announcements = [];
-$sql_ann = "SELECT a.*, u.full_name as author_name FROM announcements a JOIN users u ON a.posted_by = u.user_id ORDER BY a.created_at DESC LIMIT 3";
+$sql_ann = "SELECT a.*, u.full_name as author_name FROM announcements a LEFT JOIN users u ON a.posted_by = u.user_id ORDER BY a.created_at DESC LIMIT 3";
 $res_ann = $conn->query($sql_ann);
 if ($res_ann) {
     while($row = $res_ann->fetch_assoc()) $announcements[] = $row;
+}
+
+// Fetch missing required documents for the active period
+$missing_documents = [];
+$sql_missing = "
+    SELECT dt.doc_type_id, dt.doc_code, dt.description 
+    FROM document_types dt 
+    WHERE dt.required = 'Yes' 
+      AND dt.doc_type_id NOT IN (
+          SELECT d.doc_type_id 
+          FROM documents d 
+          WHERE d.office_id = ? 
+            AND d.academic_year = ? 
+            AND d.semester = ? 
+            AND d.status = 'Approved'
+      )
+    ORDER BY dt.doc_code ASC
+";
+$stmt_missing = $conn->prepare($sql_missing);
+if ($stmt_missing) {
+    $stmt_missing->bind_param("iss", $office_id, $active_year, $active_semester);
+    $stmt_missing->execute();
+    $res_missing = $stmt_missing->get_result();
+    while ($row = $res_missing->fetch_assoc()) {
+        $missing_documents[] = $row;
+    }
+    $stmt_missing->close();
 }
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="icon" type="image/jpeg" href="../../assets/img/ua-qms-logo.jpg">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Unit Dashboard | UA QMS</title>
+    <title><?= htmlspecialchars($user_office_name ? $user_office_name . ' Dashboard' : 'Unit Dashboard') ?> | UA QMS</title>
     <link rel="stylesheet" href="../../assets/css/dashboard.css">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -149,25 +202,32 @@ if ($res_ann) {
         .bg-ua-maroon { background-color: var(--ua-maroon); }
         .text-ua-maroon { color: var(--ua-maroon); }
         .border-ua-maroon { border-color: var(--ua-maroon); }
+        @keyframes zoomIn {
+            from { transform: scale(0.92); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+        .animate-zoom-in {
+            animation: zoomIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+        }
     </style>
 </head>
 <body class="bg-gray-50 font-sans">
     <div class="flex h-screen overflow-hidden">
-        <?php include "../../includes/sidebar_dean.php"; ?>
+        <?php require_once __DIR__ . "/../../includes/sidebar_dean.php"; ?>
 
         <!-- Main Content -->
         <main class="flex-1 flex flex-col overflow-hidden">
             <!-- Topbar -->
-            <header class="h-20 bg-white border-b border-gray-200 flex items-center justify-between px-8 flex-shrink-0">
-                <div class="flex items-center gap-3">
-                    <h1 class="text-lg font-bold text-gray-900 leading-tight">Unit Dashboard</h1>
+            <header class="h-20 bg-white border-b border-gray-200 flex items-center justify-between px-4 md:px-8 flex-shrink-0 sticky top-0 z-50">
+                <div class="flex items-center gap-3 min-w-0">
+                    <h1 class="text-base md:text-lg font-bold text-gray-900 leading-tight truncate"><?= htmlspecialchars($user_office_name ? $user_office_name : 'Unit') ?><span class="hidden sm:inline"> Dashboard</span></h1>
                     <?php
                     $year_display = $active_year;
                     if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
                         $year_display = (string)max(array_map('intval', $matches[0]));
                     }
                     ?>
-                    <span class="bg-red-50 text-[#800000] border border-red-100 px-3 py-1 rounded-full text-xs font-bold shadow-sm inline-flex items-center gap-1.5"><i class="fas fa-calendar-check"></i> Active Period: AY <?= htmlspecialchars($active_year) ?> &middot; <?= htmlspecialchars($active_semester) ?></span>
+                    <span class="hidden xl:inline-flex bg-red-50 text-[#800000] border border-red-100 px-3 py-1 rounded-full text-xs font-bold shadow-sm items-center gap-1.5"><i class="fas fa-calendar-check"></i> Active Period: AY <?= htmlspecialchars($active_year) ?> &middot; <?= htmlspecialchars($active_semester) ?></span>
                 </div>
                 <div class="flex items-center gap-6">
                     <!-- Clock -->
@@ -185,9 +245,13 @@ if ($res_ann) {
                         </button>
                         <!-- Profile Dropdown -->
                         <div class="relative">
-                            <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition">
-                                <?php echo isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'; ?>
-                            </button>
+                            <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition overflow-hidden">
+                            <?php if (!empty($_SESSION['profile_photo'])): ?>
+                                <img src="<?php echo htmlspecialchars($_SESSION['profile_photo']); ?>" class="w-full h-full object-cover rounded-full" alt="Profile" />
+                            <?php else: ?>
+                                <?php echo htmlspecialchars(isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'); ?>
+                            <?php endif; ?>
+                        </button>
                             <div id="profile-dropdown" class="profile-dropdown">
                                 <div class="profile-dropdown-header">
                                     <p><?php echo htmlspecialchars($_SESSION['full_name'] ?? 'User'); ?></p>
@@ -206,7 +270,7 @@ if ($res_ann) {
             <div class="flex-1 overflow-auto p-4 md:p-8">
 
             <!-- Personal Compliance Dashboard -->
-            <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
+            <section class="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
                 <div class="bg-white border border-gray-200 rounded-lg p-5">
                     <p class="text-sm font-medium text-gray-500">Completion Rate</p>
                     <p id="deanCompletionRate" class="mt-2 text-3xl font-bold text-gray-900"><?php echo $stats['completion_rate']; ?>%</p>
@@ -231,11 +295,9 @@ if ($res_ann) {
                 </div>
             </section>
 
-
-
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
                 <!-- Revision Inbox -->
-                <div class="bg-white border border-gray-200 rounded-xl p-5 shadow-sm lg:col-span-2">
+                <div class="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
                     <div class="flex items-center gap-2 mb-4 border-b border-gray-100 pb-3">
                         <i class="fas fa-exclamation-circle text-red-600"></i>
                         <h2 class="text-sm font-bold text-gray-700 uppercase tracking-wider">Revision Inbox</h2>
@@ -293,31 +355,85 @@ if ($res_ann) {
                         <?php endif; ?>
                     </div>
                 </div>
+            </div>
 
-                <!-- Announcements -->
-                <div class="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
-                    <div class="flex items-center gap-2 mb-4 border-b border-gray-100 pb-3">
-                        <i class="fas fa-bullhorn text-ua-maroon"></i>
-                        <h2 class="text-sm font-bold text-gray-700 uppercase tracking-wider">Announcements</h2>
-                    </div>
-                    <div id="deanAnnouncementsBody" class="space-y-4">
-                        <?php if(empty($announcements)): ?>
-                            <p class="text-gray-500 text-sm text-center py-4">No new announcements.</p>
-                        <?php else: ?>
-                            <?php foreach($announcements as $ann): ?>
-                                <div class="bg-white p-4 rounded-xl border border-gray-200 shadow-sm relative overflow-hidden group">
-                                    <div class="absolute left-0 top-0 bottom-0 w-1 bg-[#800000]"></div>
-                                    <div class="pl-2">
-                                        <h3 class="font-bold text-gray-900 text-sm"><?php echo htmlspecialchars($ann['title']); ?></h3>
-                                        <p class="text-xs text-gray-500 mt-1 mb-2">By <?php echo htmlspecialchars($ann['author_name']); ?> &bull; <?php echo date('M d, Y h:i A', strtotime($ann['created_at'])); ?></p>
-                                        <p class="text-sm text-gray-700 whitespace-pre-wrap"><?php echo htmlspecialchars($ann['content']); ?></p>
-                                    </div>
+            <!-- Announcements -->
+            <div class="bg-white border border-gray-200 rounded-xl p-5 shadow-sm mb-6">
+                <div class="flex items-center gap-2 mb-4 border-b border-gray-100 pb-3">
+                    <i class="fas fa-bullhorn text-ua-maroon"></i>
+                    <h2 class="text-sm font-bold text-gray-700 uppercase tracking-wider">Announcements</h2>
+                </div>
+                <div id="deanAnnouncementsBody" class="space-y-4">
+                    <?php if(empty($announcements)): ?>
+                        <p class="text-gray-500 text-sm text-center py-4">No new announcements.</p>
+                    <?php else: ?>
+                        <?php foreach($announcements as $ann): ?>
+                            <div class="bg-white p-4 rounded-xl border border-gray-200 shadow-sm relative overflow-hidden group flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                                <div class="absolute left-0 top-0 bottom-0 w-1 bg-[#800000]"></div>
+                                <div class="pl-2 flex-1">
+                                    <h3 class="font-bold text-gray-900 text-sm"><?php echo htmlspecialchars($ann['title']); ?></h3>
+                                    <p class="text-xs text-gray-500 mt-1 mb-2">By <?php echo htmlspecialchars($ann['author_name'] ?? 'Admin'); ?> &bull; <?php echo date('M d, Y h:i A', strtotime($ann['created_at'])); ?></p>
+                                    <p class="text-sm text-gray-700 whitespace-pre-wrap"><?php echo htmlspecialchars($ann['content']); ?></p>
                                 </div>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    </div>
+                                <?php if(!empty($ann['image_path'])): ?>
+                                    <div class="flex-shrink-0 self-center md:self-auto">
+                                        <img src="../../<?php echo htmlspecialchars($ann['image_path']); ?>" alt="Announcement Image" class="max-h-48 w-auto max-w-full md:max-w-[18rem] rounded-lg border object-contain cursor-pointer hover:opacity-90 transition" onclick="openLightboxModal('../../<?php echo htmlspecialchars($ann['image_path'], ENT_QUOTES); ?>', '<?php echo htmlspecialchars($ann['title'], ENT_QUOTES); ?>')">
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
                 </div>
             </div>
+
+            <!-- Smart Missing Documents Checklist -->
+            <?php if (!empty($missing_documents)): ?>
+            <section class="bg-white border border-red-200 rounded-xl p-6 shadow-sm mb-6 relative overflow-hidden">
+                <div class="absolute top-0 left-0 right-0 h-[4px] bg-red-600"></div>
+                <div class="flex items-center justify-between mb-4 border-b border-gray-100 pb-3">
+                    <div class="flex items-center gap-2">
+                        <i class="fas fa-exclamation-triangle text-red-600 text-lg"></i>
+                        <div>
+                            <h2 class="text-sm font-bold text-gray-800 uppercase tracking-wider">Required Actions: Missing Submissions</h2>
+                            <p class="text-xs text-gray-500 mt-0.5">The following required quality documents have not been submitted/approved for the current active period (<?php echo htmlspecialchars($active_year . ' · ' . $active_semester); ?>).</p>
+                        </div>
+                    </div>
+                    <span class="px-2.5 py-1 bg-red-50 text-red-700 text-xs font-semibold rounded-full border border-red-200"><?php echo count($missing_documents); ?> Missing</span>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <?php foreach ($missing_documents as $doc): ?>
+                        <div class="flex items-center justify-between p-3.5 bg-gray-50 border border-gray-200 rounded-lg hover:border-red-200 transition-colors group">
+                            <div class="flex items-start gap-3">
+                                <div class="w-8 h-8 rounded-lg bg-red-50 text-red-600 flex items-center justify-center flex-shrink-0 font-bold text-xs uppercase">
+                                    <?php echo htmlspecialchars(substr($doc['doc_code'], 0, 3)); ?>
+                                </div>
+                                <div>
+                                    <h4 class="font-bold text-gray-900 text-xs tracking-wide uppercase"><?php echo htmlspecialchars($doc['doc_code']); ?></h4>
+                                    <p class="text-xs text-gray-500 mt-0.5 line-clamp-1" title="<?php echo htmlspecialchars($doc['description']); ?>"><?php echo htmlspecialchars($doc['description']); ?></p>
+                                </div>
+                            </div>
+                            <a href="submit_document.php?doc_type_id=<?php echo $doc['doc_type_id']; ?>" class="p-1.5 bg-[#800000] hover:bg-red-900 text-white rounded-md transition shadow-sm flex items-center gap-1 text-xs font-bold px-2.5" title="Quick Submit">
+                                <i class="fas fa-upload text-[10px]"></i> Submit
+                            </a>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            </section>
+            <?php else: ?>
+            <section class="bg-white border border-green-200 rounded-xl p-6 shadow-sm mb-6 relative overflow-hidden">
+                <div class="absolute top-0 left-0 right-0 h-[4px] bg-green-600"></div>
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 bg-green-50 text-green-600 rounded-full flex items-center justify-center flex-shrink-0">
+                        <i class="fas fa-check-circle text-xl"></i>
+                    </div>
+                    <div>
+                        <h2 class="text-sm font-bold text-gray-800 uppercase tracking-wider">All Requirements Submitted!</h2>
+                        <p class="text-xs text-gray-500 mt-0.5">Your unit has successfully submitted and received approval for all required quality documents for the active period (<?php echo htmlspecialchars($active_year . ' · ' . $active_semester); ?>).</p>
+                    </div>
+                </div>
+            </section>
+            <?php endif; ?>
         </main>
     </div>
 
@@ -362,22 +478,9 @@ if ($res_ann) {
 
         setInterval(updateCountdowns, 60000);
         updateCountdowns();
-        lucide.createIcons();
-
-        // Profile Dropdown Toggle
-        const profileBtn = document.getElementById('profile-btn');
-        const profileDropdown = document.getElementById('profile-dropdown');
-        
-        profileBtn.addEventListener('click', function() {
-            profileDropdown.classList.toggle('active');
-        });
-        
-        // Close dropdown when clicking outside
-        document.addEventListener('click', function(event) {
-            if (!event.target.closest('#profile-btn') && !event.target.closest('#profile-dropdown')) {
-                profileDropdown.classList.remove('active');
-            }
-        });
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
 
         // Auto-hide toast after 8 seconds
         setTimeout(() => {
@@ -566,7 +669,46 @@ if ($res_ann) {
         
         // Start dashboard updates polling
         setInterval(refreshDeanDashboard, 5000);
+
+        // Lightbox Modal Logic
+        function openLightboxModal(src, title) {
+            const modal = document.getElementById('imageLightboxModal');
+            const img = document.getElementById('lightboxImage');
+            const caption = document.getElementById('lightboxCaption');
+            if (modal && img) {
+                img.src = src;
+                if (caption) {
+                    caption.textContent = title || 'Announcement Image';
+                }
+                modal.classList.remove('hidden');
+                modal.classList.add('flex');
+                document.body.style.overflow = 'hidden'; // Prevent background scrolling
+            }
+        }
+
+        function closeLightboxModal() {
+            const modal = document.getElementById('imageLightboxModal');
+            if (modal) {
+                modal.classList.add('hidden');
+                modal.classList.remove('flex');
+                document.body.style.overflow = ''; // Restore background scrolling
+            }
+        }
+
+        window.openLightboxModal = openLightboxModal;
+        window.closeLightboxModal = closeLightboxModal;
     </script>
+    </div>
+
+    <!-- Lightbox Image Modal -->
+    <div id="imageLightboxModal" class="fixed inset-0 bg-black/85 hidden items-center justify-center z-[9999] p-4 backdrop-blur-sm transition-all duration-300" onclick="closeLightboxModal()">
+        <div class="relative max-w-4xl max-h-[90vh] flex flex-col items-center justify-center animate-zoom-in" onclick="event.stopPropagation()">
+            <button onclick="closeLightboxModal()" class="absolute -top-10 right-0 text-white hover:text-gray-300 text-3xl font-extrabold focus:outline-none transition-colors" title="Close">
+                &times;
+            </button>
+            <img id="lightboxImage" src="" alt="View Announcement Image" class="max-w-full max-h-[75vh] rounded-lg shadow-2xl object-contain border border-white/10">
+            <p id="lightboxCaption" class="text-white text-xs md:text-sm font-bold mt-4 text-center select-none bg-black/50 px-4 py-1.5 rounded-full border border-white/10"></p>
+        </div>
     </div>
 
 </body>

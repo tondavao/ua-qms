@@ -1,6 +1,7 @@
 <?php
 session_start();
-include "../../config/db.php";
+require_once __DIR__ . "/../../config/db.php";
+require_once __DIR__ . "/../../includes/system_settings.php";
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'QMO Admin') {
     header("Location: ../../index.php");
@@ -30,17 +31,10 @@ function dashboard_quarter_bounds($year, $quarter) {
     }
 }
 
-$settings = [];
-$settings_result = $conn->query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('active_academic_year', 'active_semester')");
-if ($settings_result) {
-    while ($row = $settings_result->fetch_assoc()) {
-        $settings[$row['setting_key']] = $row['setting_value'];
-    }
-}
-
-$active_year = $settings['active_academic_year'] ?? date('Y') . '-' . (date('Y') + 1);
-$active_quarter_setting = $settings['active_semester'] ?? '1st Quarter';
-$active_year_display = $settings['active_academic_year'] ?? date('Y') . '-' . (date('Y') + 1);
+$period = ua_qms_get_active_period($conn);
+$active_year = $period['active_year'];
+$active_quarter_setting = $period['active_semester'];
+$active_year_display = $active_year;
 
 $academic_years = [];
 $academic_years_result = $conn->query("SELECT year_range FROM academic_years ORDER BY year_range DESC");
@@ -162,12 +156,11 @@ $stmt = $conn->prepare("
     SELECT ts.deadline, ts.quarter, dt.doc_code, dt.description
     FROM target_submissions ts
     JOIN document_types dt ON ts.doc_type_id = dt.doc_type_id
-    WHERE ts.year = ? AND ts.quarter = ?
+    WHERE ts.year = ?
     ORDER BY ts.deadline ASC
     LIMIT 6
 ");
-$ta_year = substr($selected_year, 0, 4);
-$stmt->bind_param("ss", $ta_year, $selected_quarter);
+$stmt->bind_param("s", $selected_year);
 $stmt->execute();
 $result = $stmt->get_result();
 while ($row = $result->fetch_assoc()) {
@@ -180,6 +173,7 @@ $needs_action = (int)$stats['pending'] + (int)$stats['revision'] + (int)$stats['
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="icon" type="image/jpeg" href="../../assets/img/ua-qms-logo.jpg">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>QMO Overview | UA QMS</title>
@@ -195,30 +189,14 @@ $needs_action = (int)$stats['pending'] + (int)$stats['revision'] + (int)$stats['
         :root { --ua-maroon: #800000; }
         .bg-ua-maroon { background-color: var(--ua-maroon); }
         .text-ua-maroon { color: var(--ua-maroon); }
-        .profile-dropdown {
-            position: absolute;
-            right: 0;
-            top: 55px;
-            width: 220px;
-            background: white;
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-            overflow: hidden;
-            display: none;
-            z-index: 100;
-        }
-        .profile-dropdown.active { display: block; }
-        .profile-dropdown-header { padding: 16px; border-bottom: 1px solid #eee; }
-        .profile-dropdown-item { display: flex; gap: 10px; padding: 14px 16px; color: #333; text-decoration: none; }
-        .profile-dropdown-item:hover { background: #f5f5f5; }
+
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body class="bg-gray-50 font-sans" data-user-role="<?php echo h($_SESSION['role']); ?>">
 <script>localStorage.setItem('userRole', '<?php echo h($_SESSION['role']); ?>');</script>
 <div class="flex h-screen overflow-hidden">
-    <?php include "../../includes/sidebar_qmo.php"; ?>
+    <?php require_once __DIR__ . "/../../includes/sidebar_qmo.php"; ?>
 
     <main class="flex-1 flex flex-col overflow-hidden">
         <header class="h-20 bg-white border-b border-gray-200 flex items-center justify-between px-8 flex-shrink-0">
@@ -241,8 +219,12 @@ $needs_action = (int)$stats['pending'] + (int)$stats['revision'] + (int)$stats['
                         <span id="notification-badge" class="absolute top-1 right-1 min-w-[16px] h-4 px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center hidden">0</span>
                     </button>
                     <div class="relative">
-                        <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition">
-                            <?php echo h(isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'); ?>
+                        <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition overflow-hidden">
+                            <?php if (!empty($_SESSION['profile_photo'])): ?>
+                                <img src="<?php echo htmlspecialchars($_SESSION['profile_photo']); ?>" class="w-full h-full object-cover rounded-full" alt="Profile" />
+                            <?php else: ?>
+                                <?php echo h(isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'); ?>
+                            <?php endif; ?>
                         </button>
                         <div id="profile-dropdown" class="profile-dropdown">
                             <div class="profile-dropdown-header">
@@ -259,33 +241,33 @@ $needs_action = (int)$stats['pending'] + (int)$stats['revision'] + (int)$stats['
         </header>
 
         <div class="flex-1 overflow-auto p-4 md:p-8 space-y-6">
-            <div class="flex flex-wrap gap-4 items-center justify-between">
-                <form method="GET" class="flex flex-wrap gap-3 items-center">
-                    <select name="year" class="border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-red-200">
+            <div class="bg-white p-4 rounded-xl border border-gray-200/80 shadow-sm flex flex-col md:flex-row gap-4 items-stretch md:items-center justify-between">
+                <form method="GET" class="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center w-full md:w-auto">
+                    <select name="year" onchange="this.form.submit()" class="w-full sm:w-44 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-red-200 text-sm">
                         <?php foreach ($academic_years as $year_option): ?>
                             <option value="<?php echo h($year_option); ?>" <?php echo $selected_year === $year_option ? 'selected' : ''; ?>>
                                 <?php echo h($year_option); ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
-                    <select name="quarter" class="border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-red-200">
+                    <select name="quarter" onchange="this.form.submit()" class="w-full sm:w-44 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-red-200 text-sm">
                         <?php foreach ($quarters as $quarter_option): ?>
                             <option value="<?php echo h($quarter_option); ?>" <?php echo $selected_quarter === $quarter_option ? 'selected' : ''; ?>>
                                 <?php echo h($quarter_option); ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
-                    <button type="submit" class="bg-[#800000] text-white px-4 py-2 rounded-lg hover:bg-red-900 transition">
-                        <i class="fas fa-filter mr-2"></i>Apply
+                    <button type="submit" class="bg-[#800000] text-white px-4 py-2 sm:py-1.5 rounded-lg hover:bg-red-900 transition text-xs font-semibold h-[40px] sm:h-[38px] flex items-center justify-center flex-shrink-0">
+                        <i class="fas fa-filter mr-2 text-[10px]"></i>Apply
                     </button>
                 </form>
-                <div class="flex bg-white p-1 rounded-lg border border-gray-200 shadow-sm">
-                    <a href="index.php?year=<?php echo urlencode($selected_year); ?>&quarter=<?php echo urlencode($selected_quarter); ?>" class="px-4 py-2 font-bold text-xs rounded-md bg-[#800000] text-white">Overview</a>
-                    <a href="analytics_dashboard.php?year=<?php echo urlencode($selected_year); ?>&quarter=<?php echo urlencode($selected_quarter); ?>" class="px-4 py-2 font-bold text-xs rounded-md text-gray-500 hover:text-gray-700">Detailed Analytics</a>
+                <div class="flex bg-white p-1 rounded-lg border border-gray-200 shadow-sm w-full md:w-auto justify-center">
+                    <a href="index.php?year=<?php echo urlencode($selected_year); ?>&quarter=<?php echo urlencode($selected_quarter); ?>" class="flex-1 md:flex-initial text-center px-4 py-2 font-bold text-xs rounded-md bg-[#800000] text-white">Overview</a>
+                    <a href="analytics_dashboard.php?year=<?php echo urlencode($selected_year); ?>&quarter=<?php echo urlencode($selected_quarter); ?>" class="flex-1 md:flex-initial text-center px-4 py-2 font-bold text-xs rounded-md text-gray-500 hover:text-gray-700">Detailed Analytics</a>
                 </div>
             </div>
 
-            <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+            <section class="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-4 gap-4">
                 <div class="bg-white border border-gray-200 rounded-lg p-5">
                     <p class="text-sm font-medium text-gray-500">Overall Compliance</p>
                     <p id="overallCompliance" class="mt-2 text-3xl font-bold text-gray-900"><?php echo $overall_compliance; ?>%</p>
@@ -433,20 +415,7 @@ $needs_action = (int)$stats['pending'] + (int)$stats['revision'] + (int)$stats['
 </div>
 
 <script>
-const profileBtn = document.getElementById('profile-btn');
-const profileDropdown = document.getElementById('profile-dropdown');
-if (profileBtn && profileDropdown) {
-    profileBtn.addEventListener('click', function(event) {
-        event.stopPropagation();
-        profileDropdown.classList.toggle('active');
-    });
-    document.addEventListener('click', function(event) {
-        if (!event.target.closest('#profile-btn') && !event.target.closest('#profile-dropdown')) {
-            profileDropdown.classList.remove('active');
-        }
-    });
-}
-
+(function() {
 fetch('../../api/cron_reminders.php?silent=1&_t=' + Date.now(), { cache: 'no-store' })
     .catch(error => console.error('Reminders check failed:', error));
 
@@ -585,10 +554,41 @@ function renderOfficeAttention(rows, hasSubmissions) {
 let statusChart = null;
 let complianceChart = null;
 
+if (typeof Chart !== 'undefined') {
+    Chart.register({
+        id: 'emptyDoughnut',
+        afterDraw(chart) {
+            if (chart.config.type === 'doughnut') {
+                const hasData = chart.data.datasets[0].data.some(val => val > 0);
+                if (!hasData) {
+                    const ctx = chart.ctx;
+                    const width = chart.width;
+                    const height = chart.height;
+                    ctx.save();
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.font = '12px "Plus Jakarta Sans", sans-serif';
+                    ctx.fillStyle = '#9ca3af'; // gray-400
+                    ctx.fillText('No data available', width / 2, height / 2 - 10);
+                    ctx.restore();
+                }
+            }
+        }
+    });
+}
+
 function initCharts(approved, pending, revision, rejected, offices) {
+    if (typeof Chart === 'undefined') {
+        console.warn("Chart.js is not loaded. Skipping chart initialization.");
+        return;
+    }
     const canvasStatus = document.getElementById('statusChart');
     const canvasCompliance = document.getElementById('complianceChart');
     if (!canvasStatus || !canvasCompliance) return;
+
+    if (!Array.isArray(offices)) {
+        offices = [];
+    }
 
     const ctxStatus = canvasStatus.getContext('2d');
     statusChart = new Chart(ctxStatus, {
@@ -611,28 +611,6 @@ function initCharts(approved, pending, revision, rejected, offices) {
                         boxWidth: 12,
                         font: { size: 11, family: 'Plus Jakarta Sans' }
                     }
-                }
-            }
-        }
-    });
-
-    // Add empty state text plugin for doughnut chart
-    Chart.register({
-        id: 'emptyDoughnut',
-        afterDraw(chart) {
-            if (chart.config.type === 'doughnut') {
-                const hasData = chart.data.datasets[0].data.some(val => val > 0);
-                if (!hasData) {
-                    const ctx = chart.ctx;
-                    const width = chart.width;
-                    const height = chart.height;
-                    ctx.save();
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.font = '12px "Plus Jakarta Sans", sans-serif';
-                    ctx.fillStyle = '#9ca3af'; // gray-400
-                    ctx.fillText('No data available', width / 2, height / 2 - 10);
-                    ctx.restore();
                 }
             }
         }
@@ -679,9 +657,13 @@ function initCharts(approved, pending, revision, rejected, offices) {
 }
 
 function updateCharts(approved, pending, revision, rejected, offices) {
+    if (typeof Chart === 'undefined') return;
     if (!statusChart || !complianceChart) {
         initCharts(approved, pending, revision, rejected, offices);
         return;
+    }
+    if (!Array.isArray(offices)) {
+        offices = [];
     }
     statusChart.data.datasets[0].data = [approved, pending, revision, rejected];
     statusChart.update();
@@ -713,8 +695,7 @@ async function refreshDashboard() {
     }
 }
 
-// Initialize on load
-document.addEventListener("DOMContentLoaded", function() {
+function runInit() {
     initCharts(
         <?php echo (int)$stats['approved']; ?>,
         <?php echo (int)$stats['pending']; ?>,
@@ -723,8 +704,18 @@ document.addEventListener("DOMContentLoaded", function() {
         <?php echo json_encode($office_attention); ?>
     );
     refreshDashboard();
-    setInterval(refreshDashboard, 5000);
-});
+    if (window.dashboardInterval) {
+        clearInterval(window.dashboardInterval);
+    }
+    window.dashboardInterval = setInterval(refreshDashboard, 5000);
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener("DOMContentLoaded", runInit);
+} else {
+    runInit();
+}
+})();
 </script>
 </body>
 </html>

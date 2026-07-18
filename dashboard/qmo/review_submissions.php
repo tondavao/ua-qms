@@ -1,7 +1,12 @@
 <?php
 session_start();
-include "../../config/db.php";
-require_once "../../includes/workflow-tracking.php";
+require_once __DIR__ . "/../../config/db.php";
+require_once __DIR__ . "/../../includes/system_settings.php";
+require_once __DIR__ . "/../../includes/workflow-tracking.php";
+
+function h($value) {
+    return htmlspecialchars((string) ($value ?? ''), ENT_QUOTES, 'UTF-8');
+}
 
 /**
  * Helper function to trigger a notification
@@ -26,20 +31,76 @@ if(!isset($_SESSION['role']) || $_SESSION['role'] !== 'QMO Admin'){
     exit();
 }
 
-// Load active academic year and active semester from system configurations
-$settings = [];
-$settings_result = $conn->query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('active_academic_year', 'active_semester')");
-if ($settings_result) {
-    while ($row = $settings_result->fetch_assoc()) {
-        $settings[$row['setting_key']] = $row['setting_value'];
+if (isset($_GET['action']) && $_GET['action'] === 'get_next_version') {
+    header('Content-Type: application/json');
+    $office_id = (int)($_GET['office_id'] ?? 0);
+    $doc_type_id = (int)($_GET['doc_type_id'] ?? 0);
+    $ay = $_GET['ay'] ?? '';
+    $semester = $_GET['semester'] ?? '';
+    
+    $sql_existing = "SELECT version_number FROM documents WHERE office_id = ? AND doc_type_id = ? AND academic_year = ? AND semester = ? AND status != 'Archived' ORDER BY document_id DESC LIMIT 1";
+    $stmt_exist = $conn->prepare($sql_existing);
+    $stmt_exist->bind_param("iiss", $office_id, $doc_type_id, $ay, $semester);
+    $stmt_exist->execute();
+    $exist_res = $stmt_exist->get_result()->fetch_assoc();
+    $stmt_exist->close();
+    
+    $next_ver = 1;
+    if ($exist_res) {
+        $next_ver = (int)$exist_res['version_number'] + 1;
     }
+    echo json_encode(['success' => true, 'next_version' => $next_ver]);
+    exit();
 }
-$active_year = $settings['active_academic_year'] ?? date('Y') . '-' . (date('Y') + 1);
-$active_semester = $settings['active_semester'] ?? '1st Quarter';
+
+// Load active academic year and active semester from system configurations
+$period = ua_qms_get_active_period($conn);
+$active_year = $period['active_year'];
+$active_semester = $period['active_semester'];
 $active_year_display = $active_year;
 if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
     $active_year_display = (string)max(array_map('intval', $matches[0]));
 }
+
+// Fetch active offices and document types for the Scanner form dropdowns
+$scanner_offices = [];
+$res_off = $conn->query("SELECT office_id, office_name, office_code FROM offices WHERE status = 'Active' AND is_archived = FALSE ORDER BY office_name ASC");
+if ($res_off) {
+    while ($r = $res_off->fetch_assoc()) {
+        $scanner_offices[] = $r;
+    }
+}
+
+$scanner_doc_types = [];
+$res_dts = $conn->query("SELECT doc_type_id, doc_code, description FROM document_types ORDER BY doc_code ASC");
+if ($res_dts) {
+    while ($r = $res_dts->fetch_assoc()) {
+        $scanner_doc_types[] = $r;
+    }
+}
+
+$all_academic_years = [];
+$res_ay = $conn->query("SELECT year_range FROM academic_years ORDER BY year_range DESC");
+if ($res_ay) {
+    while ($r = $res_ay->fetch_assoc()) {
+        $all_academic_years[] = $r['year_range'];
+    }
+}
+if (empty($all_academic_years)) {
+    $all_academic_years = [$active_year];
+}
+
+$all_semesters = [];
+$res_sem = $conn->query("SELECT semester_name FROM semesters ORDER BY semester_name ASC");
+if ($res_sem) {
+    while ($r = $res_sem->fetch_assoc()) {
+        $all_semesters[] = $r['semester_name'];
+    }
+}
+if (empty($all_semesters)) {
+    $all_semesters = ['1st Quarter', '2nd Quarter', '3rd Quarter', '4th Quarter', '1st Semester', '2nd Semester'];
+}
+
 
 // Handle Approval, Rejection, or Hardcopy Scan upload
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
@@ -49,101 +110,154 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     
     if ($action === 'upload_scan') {
         $file = $_FILES['scanned_document'] ?? null;
+        $ay = $_POST['academic_year'] ?? null;
+        $semester = $_POST['semester'] ?? null;
+        $office_id = $_POST['office_id'] ?? null;
+        $doc_type_id = $_POST['doc_type_id'] ?? null;
+        
         header('Content-Type: application/json');
-        if (!$doc_id || !$file) {
-            echo json_encode(['success' => false, 'message' => 'Invalid document or scan file.']);
+        
+        if (!$file || !$ay || !$semester || !$office_id || !$doc_type_id) {
+            echo json_encode(['success' => false, 'message' => 'Missing required scanner fields.']);
             exit();
-        } else {
-            $file_ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-            if ($file_ext !== 'pdf') {
-                echo json_encode(['success' => false, 'message' => 'Only PDF documents are allowed for scanning.']);
+        }
+        
+        $file_ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        if ($file_ext !== 'pdf') {
+            echo json_encode(['success' => false, 'message' => 'Only PDF files are supported.']);
+            exit();
+        }
+        
+        // Find existing non-archived submission to handle versioning
+        $sql_existing = "SELECT document_id, version_number FROM documents WHERE office_id = ? AND doc_type_id = ? AND academic_year = ? AND semester = ? AND status != 'Archived' ORDER BY document_id DESC LIMIT 1";
+        $stmt_exist = $conn->prepare($sql_existing);
+        $stmt_exist->bind_param("iiss", $office_id, $doc_type_id, $ay, $semester);
+        $stmt_exist->execute();
+        $exist_res = $stmt_exist->get_result()->fetch_assoc();
+        $stmt_exist->close();
+        
+        $version_number = 1;
+        $previous_document_id = null;
+        
+        if ($exist_res) {
+            $previous_document_id = (int)$exist_res['document_id'];
+            $version_number = (int)$exist_res['version_number'] + 1;
+            
+            // Archive the previous version
+            $sql_archive = "UPDATE documents SET status = 'Archived' WHERE document_id = ?";
+            $stmt_arch = $conn->prepare($sql_archive);
+            $stmt_arch->bind_param("i", $previous_document_id);
+            $stmt_arch->execute();
+            $stmt_arch->close();
+        }
+        
+        $safe_year = preg_replace('/[^A-Za-z0-9_-]/', '_', $ay);
+        $safe_quarter = preg_replace('/[^A-Za-z0-9_-]/', '_', $semester);
+        
+        $upload_dir = "../../uploads/documents/" . $safe_year . "/" . $safe_quarter . "/";
+        if (!is_dir($upload_dir)) {
+            mkdir($upload_dir, 0777, true);
+        }
+        
+        $new_filename = time() . "_" . bin2hex(random_bytes(6)) . "_" . preg_replace('/[^A-Za-z0-9._-]/', '_', basename($file['name']));
+        $target_path = $upload_dir . $new_filename;
+        
+        if (move_uploaded_file($file['tmp_name'], $target_path)) {
+            // Check if column version_number and previous_document_id exist
+            $has_ver_cols = ua_qms_column_exists($conn, 'documents', 'version_number') && ua_qms_column_exists($conn, 'documents', 'previous_document_id');
+            
+            if ($has_ver_cols) {
+                $sql_ins = "INSERT INTO documents (office_id, doc_type_id, file_name, file_path, status, academic_year, semester, version_number, previous_document_id) VALUES (?, ?, ?, ?, 'Approved', ?, ?, ?, ?)";
+                $stmt_ins = $conn->prepare($sql_ins);
+                $stmt_ins->bind_param("iissssii", $office_id, $doc_type_id, $file['name'], $target_path, $ay, $semester, $version_number, $previous_document_id);
+            } else {
+                $sql_ins = "INSERT INTO documents (office_id, doc_type_id, file_name, file_path, status, academic_year, semester) VALUES (?, ?, ?, ?, 'Approved', ?, ?)";
+                $stmt_ins = $conn->prepare($sql_ins);
+                $stmt_ins->bind_param("iissss", $office_id, $doc_type_id, $file['name'], $target_path, $ay, $semester);
+            }
+            
+            if ($stmt_ins->execute()) {
+                $new_doc_id = $stmt_ins->insert_id;
+                $stmt_ins->close();
+                
+                // Add review log
+                $remarks = 'Scanned and uploaded directly by QMO Admin.';
+                $sql_review = "INSERT INTO document_reviews (document_id, reviewed_by, remarks, review_status) VALUES (?, 'RMO', ?, 'Approved')";
+                $stmt_rev = $conn->prepare($sql_review);
+                $stmt_rev->bind_param("is", $new_doc_id, $remarks);
+                $stmt_rev->execute();
+                $stmt_rev->close();
+                
+                // Trigger achievements, compliance tracking, and other updates
+                ua_qms_update_review_tracking($conn, $new_doc_id, 'Approved');
+                
+                echo json_encode(['success' => true, 'message' => 'Document scanned, approved, and repository successfully updated!']);
                 exit();
             } else {
-                $sql_doc = "SELECT academic_year, semester FROM documents WHERE document_id = ?";
-                $stmt_doc = $conn->prepare($sql_doc);
-                $stmt_doc->bind_param("i", $doc_id);
-                $stmt_doc->execute();
-                $doc_res = $stmt_doc->get_result()->fetch_assoc();
-                
-                if (!$doc_res) {
-                    echo json_encode(['success' => false, 'message' => 'Document not found.']);
-                    exit();
-                } else {
-                    $safe_year = preg_replace('/[^A-Za-z0-9_-]/', '_', $doc_res['academic_year']);
-                    $safe_quarter = preg_replace('/[^A-Za-z0-9_-]/', '_', $doc_res['semester']);
-                    
-                    $upload_dir = "../../uploads/documents/" . $safe_year . "/" . $safe_quarter . "/";
-                    if (!is_dir($upload_dir)) mkdir($upload_dir, 0777, true);
-                    
-                    $new_filename = time() . "_" . bin2hex(random_bytes(6)) . "_" . preg_replace('/[^A-Za-z0-9._-]/', '_', basename($file['name']));
-                    $target_path = $upload_dir . $new_filename;
-                    
-                    if (move_uploaded_file($file['tmp_name'], $target_path)) {
-                        $sql_update = "UPDATE documents SET file_path = ?, file_name = ? WHERE document_id = ?";
-                        $stmt_upd = $conn->prepare($sql_update);
-                        $stmt_upd->bind_param("ssi", $target_path, $file['name'], $doc_id);
-                        
-                        if ($stmt_upd->execute()) {
-                            ua_qms_track_document_analytics($conn, (int)$doc_id, 'hardcopy_scan');
-                            echo json_encode(['success' => true, 'message' => 'Hardcopy document scanned and uploaded successfully!']);
-                            exit();
-                        } else {
-                            echo json_encode(['success' => false, 'message' => 'Database update failed.']);
-                            exit();
-                        }
-                    } else {
-                        echo json_encode(['success' => false, 'message' => 'Failed to save scan file.']);
-                        exit();
-                    }
-                }
+                echo json_encode(['success' => false, 'message' => 'Failed to save document record: ' . $conn->error]);
+                exit();
             }
+        } else {
+            echo json_encode(['success' => false, 'message' => 'Failed to save scanned document file.']);
+            exit();
         }
     }
     
     if (!$doc_id) {
         $message = "Error: No document selected for review.";
     } else {
-        $status = ($action === 'approve') ? 'Approved' : 'Revision';
-        
-        // Update document status
-        $sql_update = "UPDATE documents SET status = ? WHERE document_id = ?";
-        $stmt_upd = $conn->prepare($sql_update);
-        $stmt_upd->bind_param("si", $status, $doc_id);
-        
-        if ($stmt_upd->execute()) {
-            // Record review
-            $sql_review = "INSERT INTO document_reviews (document_id, reviewed_by, remarks, review_status) VALUES (?, 'RMO', ?, ?)";
-            $stmt_rev = $conn->prepare($sql_review);
-            $stmt_rev->bind_param("iss", $doc_id, $remarks, $status);
-            $stmt_rev->execute();
+        // Verify current status is 'Awaiting Review'
+        $sql_check = "SELECT status FROM documents WHERE document_id = ?";
+        $stmt_check = $conn->prepare($sql_check);
+        $stmt_check->bind_param("i", $doc_id);
+        $stmt_check->execute();
+        $curr_status = $stmt_check->get_result()->fetch_assoc()['status'] ?? '';
+        $stmt_check->close();
 
-            ua_qms_update_review_tracking($conn, (int)$doc_id, $status);
+        if ($curr_status !== 'Awaiting Review') {
+            $message = "Error: This document cannot be reviewed because its current status is '" . $curr_status . "'.";
+        } else {
+            $status = ($action === 'approve') ? 'Approved' : 'Revision';
             
-            $message = "Success: Document " . ($status === 'Approved' ? 'approved' : 'sent for revision') . " successfully.";
+            // Update document status
+            $sql_update = "UPDATE documents SET status = ? WHERE document_id = ?";
+            $stmt_upd = $conn->prepare($sql_update);
+            $stmt_upd->bind_param("si", $status, $doc_id);
             
-            // Get document details for notification and targets
-            $sql_doc_info = "SELECT d.office_id, d.doc_type_id, d.academic_year, d.semester, dt.doc_code 
-                             FROM documents d 
-                             JOIN document_types dt ON d.doc_type_id = dt.doc_type_id 
-                             WHERE d.document_id = ?";
-            $stmt_doc = $conn->prepare($sql_doc_info);
-            $stmt_doc->bind_param("i", $doc_id);
-            $stmt_doc->execute();
-            $doc_info = $stmt_doc->get_result()->fetch_assoc();
-            $doc_code = $doc_info['doc_code'] ?? 'Document';
-            $target_office_id = $doc_info['office_id'];
-            $target_doc_type_id = $doc_info['doc_type_id'];
-            $target_year = $doc_info['academic_year'];
-            $target_quarter = $doc_info['semester'];
+            if ($stmt_upd->execute()) {
+                // Record review
+                $sql_review = "INSERT INTO document_reviews (document_id, reviewed_by, remarks, review_status) VALUES (?, 'RMO', ?, ?)";
+                $stmt_rev = $conn->prepare($sql_review);
+                $stmt_rev->bind_param("iss", $doc_id, $remarks, $status);
+                $stmt_rev->execute();
+                $stmt_rev->close();
 
-            if ($status === 'Approved') {
-                // Tracking handles are now purely delegated to ua_qms_update_review_tracking() 
-                // to avoid redundant queries and schema mismatch fatal errors.
-            }
+                ua_qms_update_review_tracking($conn, (int)$doc_id, $status);
+                
+                $message = "Success: Document " . ($status === 'Approved' ? 'approved' : 'sent for revision') . " successfully.";
+                
+                // Get document details for notification and targets
+                $sql_doc_info = "SELECT d.office_id, d.doc_type_id, d.academic_year, d.semester, dt.doc_code 
+                                 FROM documents d 
+                                 JOIN document_types dt ON d.doc_type_id = dt.doc_type_id 
+                                 WHERE d.document_id = ?";
+                $stmt_doc = $conn->prepare($sql_doc_info);
+                $stmt_doc->bind_param("i", $doc_id);
+                $stmt_doc->execute();
+                $doc_info = $stmt_doc->get_result()->fetch_assoc();
+                $doc_code = $doc_info['doc_code'] ?? 'Document';
+                $target_office_id = $doc_info['office_id'];
+                $target_doc_type_id = $doc_info['doc_type_id'];
+                $target_year = $doc_info['academic_year'];
+                $target_quarter = $doc_info['semester'];
+                $stmt_doc->close();
 
+                if ($status === 'Approved') {
+                    // Tracking handles are now purely delegated to ua_qms_update_review_tracking() 
+                }
 
-            // Trigger Notification for the Submitter (Dean)
-            $notif_title = ($status === 'Approved') ? "Document Approved" : "Revision Required";
+                // Trigger Notification for the Submitter (Dean)
+                $notif_title = ($status === 'Approved') ? "Document Approved" : "Revision Required";
             $notif_msg = ($status === 'Approved') 
                 ? "Your submission for " . $doc_code . " has been approved by QMO."
                 : "Your submission for " . $doc_code . " requires revision. Remarks: " . $remarks;
@@ -175,6 +289,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         } else {
             $message = "Error: Failed to update document status.";
         }
+        }
         
         if (isset($message) && strpos($message, 'Success') !== false) {
             header("Location: review_submissions.php?msg=" . urlencode($message));
@@ -200,24 +315,24 @@ if ($selected_id) {
     $selected_doc = $stmt_sel->get_result()->fetch_assoc();
 }
 
-// Fetch documents awaiting review for active period
+// Fetch active review queue documents (Awaiting Review or Revision status) for active period - sorted by latest first
 $sql_queue = "SELECT d.*, dt.doc_code, dt.description as doc_type_desc, o.office_name, u.full_name as submitter_name 
               FROM documents d 
               JOIN document_types dt ON d.doc_type_id = dt.doc_type_id 
               JOIN offices o ON d.office_id = o.office_id
               LEFT JOIN users u ON o.office_id = u.office_id AND u.role = 'Dean'
-              WHERE d.status = 'Awaiting Review'
+              WHERE d.status IN ('Awaiting Review', 'Revision')
                 AND d.academic_year = ?
                 AND d.semester = ?
                 AND d.document_id IN (
                     SELECT MAX(document_id) 
                     FROM documents 
-                    WHERE status = 'Awaiting Review' 
+                    WHERE status IN ('Awaiting Review', 'Revision')
                       AND academic_year = ?
                       AND semester = ?
                     GROUP BY office_id, doc_type_id
                 )
-              ORDER BY d.submitted_at ASC";
+              ORDER BY d.submitted_at DESC";
 $stmt_queue = $conn->prepare($sql_queue);
 $stmt_queue->bind_param("ssss", $active_year, $active_semester, $active_year, $active_semester);
 $stmt_queue->execute();
@@ -253,10 +368,53 @@ if (!$selected_doc && $queue_count > 0) {
     $selected_doc = $result_queue->fetch_assoc();
     $result_queue->data_seek(0); // Reset for the while loop below
 }
+
+// Group submissions into New (Version 1, Awaiting Review) and Revisions/Resubmissions (Version > 1 or Revision)
+$new_submissions = [];
+$revision_submissions = [];
+while ($row = $result_queue->fetch_assoc()) {
+    if ($row['status'] === 'Revision' || (int)$row['version_number'] > 1) {
+        $revision_submissions[] = $row;
+    } else {
+        $new_submissions[] = $row;
+    }
+}
+
+$versions_list = [];
+if ($selected_doc) {
+    $sql_versions = "
+        SELECT d.*, dr.remarks, dr.reviewed_at 
+        FROM documents d
+        LEFT JOIN (
+            SELECT dr1.document_id, dr1.remarks, dr1.reviewed_at
+            FROM document_reviews dr1
+            JOIN (
+                SELECT document_id, MAX(review_id) as max_id 
+                FROM document_reviews 
+                GROUP BY document_id
+            ) dr2 ON dr1.review_id = dr2.max_id
+        ) dr ON d.document_id = dr.document_id
+        WHERE d.office_id = ?
+          AND d.doc_type_id = ?
+          AND d.academic_year = ?
+          AND d.semester = ?
+        ORDER BY d.version_number DESC, d.document_id DESC
+    ";
+    $stmt_ver = $conn->prepare($sql_versions);
+    $stmt_ver->bind_param("iiss", $selected_doc['office_id'], $selected_doc['doc_type_id'], $selected_doc['academic_year'], $selected_doc['semester']);
+    $stmt_ver->execute();
+    $res_ver = $stmt_ver->get_result();
+    while ($v_row = $res_ver->fetch_assoc()) {
+        $versions_list[] = $v_row;
+    }
+    $stmt_ver->close();
+}
+$has_selected_id = isset($_GET['id']);
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="icon" type="image/jpeg" href="../../assets/img/ua-qms-logo.jpg">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UA QMS | Submissions</title>
@@ -363,7 +521,7 @@ if (!$selected_doc && $queue_count > 0) {
 <body class="bg-gray-50">
     <div class="flex h-screen overflow-hidden">
         <!-- Sidebar -->
-        <?php include "../../includes/sidebar_qmo.php"; ?>
+        <?php require_once __DIR__ . "/../../includes/sidebar_qmo.php"; ?>
 
         <!-- Main Content -->
         <main class="flex-1 flex flex-col overflow-hidden">
@@ -390,16 +548,24 @@ if (!$selected_doc && $queue_count > 0) {
                         </button>
                         <!-- Profile Dropdown -->
                         <div class="relative">
-                            <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition">
-                                <?php echo isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'; ?>
-                            </button>
+                            <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition overflow-hidden">
+                            <?php if (!empty($_SESSION['profile_photo'])): ?>
+                                <img src="<?php echo htmlspecialchars($_SESSION['profile_photo']); ?>" class="w-full h-full object-cover rounded-full" alt="Profile" />
+                            <?php else: ?>
+                                <?php echo h(isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'); ?>
+                            <?php endif; ?>
+                        </button>
                             <div id="profile-dropdown" class="profile-dropdown">
-                                <div class="profile-dropdown-content">
-                                    <p class="text-sm font-bold text-gray-800 px-4 py-2"><?php echo $_SESSION['full_name'] ?? 'User'; ?></p>
-                                    <p class="text-xs text-gray-500 px-4 py-1"><?php echo $_SESSION['role'] ?? 'Role'; ?></p>
-                                    <hr class="my-2">
-                                    <a href="../../logout.php" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition">Logout</a>
+                                <div class="profile-dropdown-header">
+                                    <p><?php echo h($_SESSION['full_name'] ?? 'User'); ?></p>
+                                    <span><?php echo h($_SESSION['role'] ?? 'Role'); ?></span>
                                 </div>
+                                <button id="profile-settings-btn" type="button" class="profile-dropdown-item" onclick="event.stopPropagation(); document.getElementById('profile-dropdown').classList.remove('active'); openProfileSettingsModal();">
+                                    <i class="fas fa-cog text-gray-500 mr-3 w-4 text-center"></i> Profile Settings
+                                </button>
+                                <a href="../../logout.php" class="profile-dropdown-item logout" onclick="event.stopPropagation(); event.preventDefault(); window.logoutUser();">
+                                    <i class="fas fa-sign-out-alt"></i> Sign Out
+                                </a>
                             </div>
                         </div>
                     </div>
@@ -414,8 +580,8 @@ if (!$selected_doc && $queue_count > 0) {
 
 
 
-            <div class="flex-1 overflow-y-auto p-4 md:p-8">
-                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6 no-print">
+            <div class="flex-1 overflow-y-auto xl:overflow-hidden flex flex-col p-4 md:p-6 min-h-0">
+                <div class="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6 no-print">
                     <div class="bg-white border border-gray-200 rounded-lg p-5">
                         <p class="text-sm font-medium text-gray-500">Total Submissions</p>
                         <p class="mt-2 text-3xl font-bold text-gray-900"><?php echo (int)$submission_stats['total']; ?></p>
@@ -439,9 +605,9 @@ if (!$selected_doc && $queue_count > 0) {
                 </div>
 
                 <!-- Queue and Details Container -->
-                <div class="flex flex-col xl:flex-row gap-6 min-h-[calc(100vh-14rem)]">
+                <div class="flex-1 flex flex-col xl:flex-row gap-6 min-h-0">
                 <!-- Queue Panel -->
-                <div class="w-full xl:w-96 h-80 xl:h-auto bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col overflow-hidden flex-shrink-0 no-print">
+                <div class="w-full xl:w-[480px] h-[450px] xl:h-auto bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col overflow-hidden flex-shrink-0 no-print <?php echo $has_selected_id ? 'hidden xl:flex' : 'flex'; ?>">
                     <div class="p-4 border-b border-gray-200 bg-gray-50">
                         <h2 class="font-bold text-lg text-gray-900 flex items-center gap-2">
                             <i data-lucide="inbox" class="w-5 h-5 text-[#800000]"></i>
@@ -451,32 +617,84 @@ if (!$selected_doc && $queue_count > 0) {
                             </span>
                         </h2>
                     </div>
+
+                    <!-- Queue Category Tabs -->
+                    <div class="flex border-b border-gray-200 bg-gray-50 flex-shrink-0" id="reviewQueueTabs">
+                        <button type="button" id="tab-new-btn" onclick="switchQueueTab('new')" class="flex-1 py-2.5 text-xs font-bold text-center border-b-2 border-[#800000] text-[#800000] hover:bg-gray-100 transition focus:outline-none flex items-center justify-center gap-1.5">
+                            <i class="fas fa-plus-circle text-blue-600"></i> New (<?php echo count($new_submissions); ?>)
+                        </button>
+                        <button type="button" id="tab-rev-btn" onclick="switchQueueTab('rev')" class="flex-1 py-2.5 text-xs font-bold text-center border-b-2 border-transparent text-gray-500 hover:text-[#800000] hover:bg-gray-100 transition focus:outline-none flex items-center justify-center gap-1.5">
+                            <i class="fas fa-undo-alt text-amber-600"></i> Revisions (<?php echo count($revision_submissions); ?>)
+                        </button>
+                    </div>
                     
                     <div class="flex-1 overflow-y-auto" id="reviewQueueContainer">
                         <?php if ($queue_count === 0): ?>
                             <div class="p-8 text-center text-gray-500">
                                 <i data-lucide="check-circle" class="w-12 h-12 mx-auto mb-2 text-green-500"></i>
-                                
                                 <p class="text-sm font-medium mt-1">Review Queue Empty</p>
                                 <p class="text-xs">No documents awaiting review.</p>
                             </div>
                         <?php else: ?>
-                            <?php while ($row = $result_queue->fetch_assoc()): ?>
-                                <a href="review_submissions.php?id=<?php echo $row['document_id']; ?>" 
-                                   class="block p-4 border-b border-gray-100 hover:bg-gray-50 transition cursor-pointer <?php echo ($selected_doc && $selected_doc['document_id'] == $row['document_id']) ? 'bg-blue-50 border-l-4 border-l-[#800000]' : ''; ?>">
-                                    <div class="mb-2">
-                                        <p class="text-xs font-bold text-gray-500 uppercase"><?php echo htmlspecialchars($row['doc_code']); ?> <?php if(isset($row['version_number']) && $row['version_number'] > 1) echo '<span class="bg-[#800000] text-white text-[10px] font-bold px-2 py-0.5 rounded-md ml-2 shadow-sm border border-red-900"><i class="fas fa-code-branch mr-1"></i>Version '.$row['version_number'].'</span>'; ?></p>
-                                        <p class="text-sm font-bold text-gray-900"><?php echo htmlspecialchars($row['office_name']); ?></p>
-                                    </div>
-                                    <p class="text-xs text-gray-500">Submitted: <?php echo date('M d, Y', strtotime($row['submitted_at'])); ?></p>
-                                </a>
-                            <?php endwhile; ?>
+                            <!-- Section 1: New Submissions -->
+                            <div id="queue-section-new" class="p-3">
+                                <div class="space-y-2">
+                                    <?php if (empty($new_submissions)): ?>
+                                        <p class="text-xs text-gray-400 text-center py-4 bg-white border border-gray-200 rounded-lg">No new submissions.</p>
+                                    <?php else: ?>
+                                        <?php foreach ($new_submissions as $row): ?>
+                                            <a href="review_submissions.php?id=<?php echo $row['document_id']; ?>" 
+                                               class="block p-3 bg-white border border-gray-200 rounded-lg hover:border-[#800000] hover:shadow-sm transition cursor-pointer <?php echo ($selected_doc && $selected_doc['document_id'] == $row['document_id']) ? 'ring-2 ring-[#800000] border-transparent' : ''; ?>">
+                                                <div class="flex justify-between items-start gap-3 mb-2">
+                                                    <span class="text-[10px] font-bold text-gray-700 uppercase tracking-wider bg-gray-100 px-2 py-0.5 rounded border border-gray-250 leading-relaxed"><?php echo htmlspecialchars(($row['doc_type_desc'] ?? 'Document') . ' (' . $row['doc_code'] . ')'); ?></span>
+                                                    <span class="text-[9px] text-gray-400 flex-shrink-0 mt-0.5"><?php echo date('M d, g:i A', strtotime($row['submitted_at'])); ?></span>
+                                                </div>
+                                                <p class="text-xs font-bold text-gray-900 break-words leading-relaxed"><?php echo htmlspecialchars($row['office_name']); ?></p>
+                                            </a>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+
+                            <!-- Section 2: Revisions & Resubmissions -->
+                            <div id="queue-section-rev" class="p-3 hidden">
+                                <div class="space-y-2">
+                                    <?php if (empty($revision_submissions)): ?>
+                                        <p class="text-xs text-gray-400 text-center py-4 bg-white border border-gray-250 rounded-lg">No active revisions.</p>
+                                    <?php else: ?>
+                                        <?php foreach ($revision_submissions as $row): ?>
+                                            <a href="review_submissions.php?id=<?php echo $row['document_id']; ?>" 
+                                               class="block p-3 bg-white border border-gray-200 rounded-lg hover:border-[#800000] hover:shadow-sm transition cursor-pointer <?php echo ($selected_doc && $selected_doc['document_id'] == $row['document_id']) ? 'ring-2 ring-[#800000] border-transparent' : ''; ?>">
+                                                <div class="flex justify-between items-start gap-3 mb-2">
+                                                    <span class="text-[10px] font-bold text-gray-700 uppercase tracking-wider bg-gray-100 px-2 py-0.5 rounded border border-gray-250 leading-relaxed"><?php echo htmlspecialchars(($row['doc_type_desc'] ?? 'Document') . ' (' . $row['doc_code'] . ')'); ?></span>
+                                                    <span class="text-[9px] text-gray-400 flex-shrink-0 mt-0.5"><?php echo date('M d, g:i A', strtotime($row['submitted_at'])); ?></span>
+                                                </div>
+                                                <div class="flex items-center justify-between gap-2 flex-wrap">
+                                                    <p class="text-xs font-bold text-gray-900 break-words flex-1 min-w-[200px] leading-relaxed"><?php echo htmlspecialchars($row['office_name']); ?></p>
+                                                    <?php if ($row['status'] === 'Revision'): ?>
+                                                        <span class="bg-red-100 text-[#800000] border border-red-300 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 shadow-sm"><i class="fas fa-undo-alt text-[8px]"></i> Returned</span>
+                                                    <?php else: ?>
+                                                        <span class="bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 shadow-sm"><i class="fas fa-code-branch text-[8px]"></i> V<?php echo $row['version_number']; ?></span>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </a>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
                         <?php endif; ?>
                     </div>
                 </div>
 
                 <!-- Details Panel -->
-                <div class="flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col overflow-hidden">
+                <div class="flex-grow md:flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col overflow-hidden min-h-[500px] xl:h-auto xl:min-h-0 <?php echo $has_selected_id ? 'flex' : 'hidden xl:flex'; ?>">
+                    <?php if ($has_selected_id): ?>
+                        <div class="xl:hidden px-6 pt-4 bg-gray-50 flex-shrink-0">
+                            <a href="review_submissions.php" class="inline-flex items-center gap-1.5 text-xs font-bold text-[#800000] hover:text-red-900 transition-colors uppercase tracking-wider">
+                                <i class="fas fa-chevron-left text-[10px]"></i> Back to Queue
+                            </a>
+                        </div>
+                    <?php endif; ?>
                     <div class="p-6 border-b border-gray-200 bg-gray-50">
                         <h2 class="text-xl font-bold text-gray-900">Document Details</h2>
                         <p class="text-sm text-gray-500 mt-1">Review and approve or request revisions</p>
@@ -487,14 +705,14 @@ if (!$selected_doc && $queue_count > 0) {
                             <div class="space-y-8">
                                 <!-- Document Info Card -->
                                 <div class="bg-gray-50 rounded-xl p-6 border border-gray-200">
-                                    <div class="flex justify-between items-start mb-6">
+                                    <div class="flex flex-col sm:flex-row justify-between items-start gap-4 mb-6">
                                         <div>
                                             <span class="px-3 py-1 bg-blue-100 text-blue-700 text-xs font-bold rounded-full uppercase tracking-wider mb-2 inline-block">
                                                 <?php echo htmlspecialchars(($selected_doc['doc_type_desc'] ?? 'Quality Document') . ' (' . $selected_doc['doc_code'] . ')'); ?>
                                             </span>
-                                            <h3 class="text-2xl font-bold text-gray-900"><?php echo htmlspecialchars($selected_doc['office_name']); ?></h3>
+                                            <h3 class="text-xl sm:text-2xl font-bold text-gray-900 leading-tight"><?php echo htmlspecialchars($selected_doc['office_name']); ?></h3>
                                         </div>
-                                        <div class="text-right">
+                                        <div class="text-left sm:text-right flex-shrink-0">
                                             <p class="text-xs font-bold text-gray-400 uppercase">Submitted By</p>
                                             <p class="font-bold text-gray-900"><?php echo htmlspecialchars($selected_doc['submitter_name'] ?? 'Unit Head'); ?></p>
                                             <p class="text-xs text-gray-500"><?php echo date('F d, Y h:i A', strtotime($selected_doc['submitted_at'])); ?></p>
@@ -517,8 +735,61 @@ if (!$selected_doc && $queue_count > 0) {
                                         </div>
                                     </div>
                                 </div>
- 
+
+                                <!-- Version History Timeline -->
+                                <div class="bg-white rounded-xl border border-gray-200 p-6">
+                                    <h4 class="text-xs font-bold text-gray-500 uppercase mb-4 flex items-center gap-2">
+                                        <i class="fas fa-history text-[#800000]"></i> Submission Version History
+                                    </h4>
+                                    <div class="space-y-4">
+                                        <?php foreach ($versions_list as $ver): ?>
+                                            <div class="flex items-start gap-4 p-3.5 bg-gray-50/50 hover:bg-gray-50 border border-gray-150 rounded-xl transition">
+                                                <!-- Version indicator badge -->
+                                                <div class="flex-shrink-0 flex flex-col items-center justify-center w-12 h-12 rounded-lg <?php echo ($selected_doc['document_id'] == $ver['document_id']) ? 'bg-red-50 text-[#800000] border border-red-200' : 'bg-gray-100 text-gray-500 border border-gray-200'; ?> font-bold shadow-sm">
+                                                    <span class="text-[10px] uppercase text-gray-400 font-bold leading-none">Ver</span>
+                                                    <span class="text-lg leading-none mt-0.5"><?php echo (int)($ver['version_number'] ?: 1); ?></span>
+                                                </div>
+                                                
+                                                <div class="flex-1 min-w-0">
+                                                    <div class="flex items-center gap-2 flex-wrap mb-1">
+                                                        <p class="text-sm font-bold text-gray-900 truncate max-w-[200px] sm:max-w-[300px] md:max-w-[400px]"><?php echo htmlspecialchars($ver['file_name']); ?></p>
+                                                        <div>
+                                                            <?php if ($ver['status'] === 'Approved'): ?>
+                                                                <span class="bg-green-50 text-green-700 border border-green-200 text-[9px] font-bold px-2 py-0.5 rounded-full shadow-sm"><i class="fas fa-check-circle mr-0.5"></i> Approved</span>
+                                                            <?php elseif ($ver['status'] === 'Revision'): ?>
+                                                                <span class="bg-red-50 text-[#800000] border border-red-200 text-[9px] font-bold px-2 py-0.5 rounded-full shadow-sm"><i class="fas fa-exclamation-circle mr-0.5"></i> Revision Requested</span>
+                                                            <?php elseif ($ver['status'] === 'Awaiting Review'): ?>
+                                                                <span class="bg-orange-50 text-orange-700 border border-orange-200 text-[9px] font-bold px-2 py-0.5 rounded-full shadow-sm"><i class="fas fa-clock mr-0.5"></i> Awaiting Review</span>
+                                                            <?php elseif ($ver['status'] === 'Archived'): ?>
+                                                                <span class="bg-gray-100 text-gray-500 border border-gray-200 text-[9px] font-bold px-2 py-0.5 rounded-full shadow-sm"><i class="fas fa-archive mr-0.5"></i> Archived (Superseded)</span>
+                                                            <?php else: ?>
+                                                                <span class="bg-gray-50 text-gray-500 border border-gray-200 text-[9px] font-bold px-2 py-0.5 rounded-full shadow-sm"><?php echo htmlspecialchars($ver['status']); ?></span>
+                                                            <?php endif; ?>
+                                                        </div>
+                                                    </div>
+                                                    <p class="text-xs text-gray-500">Submitted: <?php echo date('M d, Y h:i A', strtotime($ver['submitted_at'])); ?></p>
+                                                    
+                                                    <?php if (!empty($ver['remarks'])): ?>
+                                                        <div class="mt-2 text-xs bg-white border border-gray-150 p-2.5 rounded-lg text-gray-600 flex items-start gap-1.5 shadow-sm">
+                                                            <i class="fas fa-comment-dots text-gray-400 mt-0.5"></i>
+                                                            <span><strong>Review Comments:</strong> <?php echo htmlspecialchars($ver['remarks']); ?></span>
+                                                        </div>
+                                                    <?php endif; ?>
+                                                </div>
+                                                
+                                                <div class="flex-shrink-0">
+                                                    <button onclick="openFileViewer('<?php echo htmlspecialchars($ver['file_path']); ?>', '<?php echo htmlspecialchars($ver['file_name']); ?>')" 
+                                                            class="p-2 text-gray-500 hover:text-[#800000] hover:bg-red-50 rounded-lg transition" title="Preview version">
+                                                        <i class="fas fa-eye text-base"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </div>
+
                                 <!-- Review Form -->
+                                <?php if ($selected_doc['status'] === 'Awaiting Review'): ?>
                                 <div>
                                     <label class="block text-xs font-bold text-gray-600 uppercase mb-3">Review Remarks</label>
                                     <form method="POST" id="review-form" class="space-y-4">
@@ -538,6 +809,22 @@ if (!$selected_doc && $queue_count > 0) {
                                         </div>
                                     </form>
                                 </div>
+                                <?php elseif ($selected_doc['status'] === 'Revision'): ?>
+                                <div class="p-4 bg-red-50 border border-red-200 text-red-800 text-sm font-semibold rounded-xl flex items-center gap-2.5 shadow-sm">
+                                    <i class="fas fa-exclamation-triangle text-red-600 text-base"></i>
+                                    <span>This version has already been returned for revisions. You cannot review or approve it until the unit uploads a new version.</span>
+                                </div>
+                                <?php elseif ($selected_doc['status'] === 'Approved'): ?>
+                                <div class="p-4 bg-green-50 border border-green-200 text-green-800 text-sm font-semibold rounded-xl flex items-center gap-2.5 shadow-sm">
+                                    <i class="fas fa-check-circle text-green-600 text-base"></i>
+                                    <span>This document is already Approved and cataloged in the repository.</span>
+                                </div>
+                                <?php else: ?>
+                                <div class="p-4 bg-gray-50 border border-gray-200 text-gray-700 text-sm font-semibold rounded-xl flex items-center gap-2.5 shadow-sm">
+                                    <i class="fas fa-info-circle text-gray-600 text-base"></i>
+                                    <span>Current Status: <?php echo htmlspecialchars($selected_doc['status']); ?>. No review actions are needed.</span>
+                                </div>
+                                <?php endif; ?></div>
                             </div>
                         <?php else: ?>
                             <div class="h-full flex flex-col items-center justify-center text-gray-400">
@@ -552,28 +839,42 @@ if (!$selected_doc && $queue_count > 0) {
                 </div>
                 </div>
             </div>
-        </main>
-    </div>
 
+    <script src="../../assets/js/scanner-processor.js"></script>
     <script>
-        lucide.createIcons();
-
-        // Profile Dropdown Toggle
-        const profileBtn = document.getElementById('profile-btn');
-        const profileDropdown = document.getElementById('profile-dropdown');
-        
-        if (profileBtn && profileDropdown) {
-            profileBtn.addEventListener('click', function() {
-                profileDropdown.classList.toggle('active');
-            });
+        function switchQueueTab(tab) {
+            const newSec = document.getElementById('queue-section-new');
+            const revSec = document.getElementById('queue-section-rev');
+            const newBtn = document.getElementById('tab-new-btn');
+            const revBtn = document.getElementById('tab-rev-btn');
+            if (!newSec || !revSec || !newBtn || !revBtn) return;
             
-            // Close dropdown when clicking outside
-            document.addEventListener('click', function(event) {
-                if (!event.target.closest('#profile-btn') && !event.target.closest('#profile-dropdown')) {
-                    profileDropdown.classList.remove('active');
-                }
-            });
+            if (tab === 'new') {
+                newSec.classList.remove('hidden');
+                revSec.classList.add('hidden');
+                newBtn.className = "flex-1 py-2.5 text-xs font-bold text-center border-b-2 border-[#800000] text-[#800000] hover:bg-gray-100 transition focus:outline-none flex items-center justify-center gap-1.5";
+                revBtn.className = "flex-1 py-2.5 text-xs font-bold text-center border-b-2 border-transparent text-gray-500 hover:text-[#800000] hover:bg-gray-100 transition focus:outline-none flex items-center justify-center gap-1.5";
+                localStorage.setItem('qmo-active-queue-tab', 'new');
+            } else {
+                newSec.classList.add('hidden');
+                revSec.classList.remove('hidden');
+                newBtn.className = "flex-1 py-2.5 text-xs font-bold text-center border-b-2 border-transparent text-gray-500 hover:text-[#800000] hover:bg-gray-100 transition focus:outline-none flex items-center justify-center gap-1.5";
+                revBtn.className = "flex-1 py-2.5 text-xs font-bold text-center border-b-2 border-[#800000] text-[#800000] hover:bg-gray-100 transition focus:outline-none flex items-center justify-center gap-1.5";
+                localStorage.setItem('qmo-active-queue-tab', 'rev');
+            }
         }
+        
+        function restoreQueueTabState() {
+            const activeTab = localStorage.getItem('qmo-active-queue-tab') || 'new';
+            switchQueueTab(activeTab);
+        }
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            restoreQueueTabState();
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
+        });
 
         // Real-time auto-update review queue list without page refresh
         setInterval(async () => {
@@ -584,16 +885,26 @@ if (!$selected_doc && $queue_count > 0) {
                 const text = await res.text();
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(text, 'text/html');
+                
                 const newQueue = doc.getElementById('reviewQueueContainer');
                 const oldQueue = document.getElementById('reviewQueueContainer');
                 const newCount = doc.getElementById('reviewQueueCount');
                 const oldCount = document.getElementById('reviewQueueCount');
+                const newTabs = doc.getElementById('reviewQueueTabs');
+                const oldTabs = document.getElementById('reviewQueueTabs');
+                
                 if (newQueue && oldQueue) {
                     oldQueue.innerHTML = newQueue.innerHTML;
                 }
                 if (newCount && oldCount) {
                     oldCount.innerHTML = newCount.innerHTML;
                 }
+                if (newTabs && oldTabs) {
+                    oldTabs.innerHTML = newTabs.innerHTML;
+                }
+                
+                restoreQueueTabState();
+                
                 if (typeof lucide !== 'undefined') {
                     lucide.createIcons();
                 }
@@ -603,15 +914,17 @@ if (!$selected_doc && $queue_count > 0) {
         }, 5000);
 
     // --- MULTI-PAGE SCANNER MODULE ---
-    let modalStream = null;
-    let pages = [];
-    let pageCounter = 0;
+    var modalStream = modalStream || null;
+    var pages = pages || [];
+    var pageCounter = pageCounter || 0;
 
     function openScannerModal() {
         pages = [];
         pageCounter = 0;
-        const docNameBase = <?php echo json_encode(isset($selected_doc) ? str_replace('.pdf', '', $selected_doc['file_name']) : 'Scanned_Doc'); ?>;
-        document.getElementById('scan-doc-name').value = docNameBase + '_scanned';
+        document.getElementById('scan-doc-name').value = '';
+        document.getElementById('scan-office-id').value = '';
+        document.getElementById('scan-doc-type-id').value = '';
+        
         updatePageCount();
         renderGallery();
         
@@ -621,6 +934,58 @@ if (!$selected_doc && $queue_count > 0) {
         
         startModalCamera();
     }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const updateScannerFilename = async () => {
+            const officeSelect = document.getElementById('scan-office-id');
+            const docTypeSelect = document.getElementById('scan-doc-type-id');
+            const aySelect = document.getElementById('scan-ay');
+            const semSelect = document.getElementById('scan-semester');
+            
+            if (!officeSelect || !docTypeSelect || !aySelect || !semSelect) return;
+            
+            const officeId = officeSelect.value;
+            const docTypeId = docTypeSelect.value;
+            const ay = aySelect.value;
+            const sem = semSelect.value;
+            
+            const officeText = officeSelect.selectedIndex > 0 ? officeSelect.options[officeSelect.selectedIndex].text : '';
+            const docTypeText = docTypeSelect.selectedIndex > 0 ? docTypeSelect.options[docTypeSelect.selectedIndex].text : '';
+            
+            if (officeText && docTypeText) {
+                const officeCodeMatch = officeText.match(/\(([^)]+)\)/);
+                const officeCode = officeCodeMatch ? officeCodeMatch[1] : 'UNIT';
+                
+                const docCodeMatch = docTypeText.match(/\(([^)]+)\)/);
+                const docCode = docCodeMatch ? docCodeMatch[1] : 'DOC';
+                
+                const safeAy = ay.replace(/[^A-Za-z0-9_-]/g, '_');
+                const safeSem = sem.replace(/[^A-Za-z0-9_-]/g, '_');
+                
+                let nextVersion = 1;
+                try {
+                    const response = await fetch(`review_submissions.php?action=get_next_version&office_id=${officeId}&doc_type_id=${docTypeId}&ay=${encodeURIComponent(ay)}&semester=${encodeURIComponent(sem)}`);
+                    const resJson = await response.json();
+                    if (resJson.success) {
+                        nextVersion = resJson.next_version;
+                    }
+                } catch (e) {
+                    console.error("Failed to query version number:", e);
+                }
+                
+                let fileName = `${officeCode}_${docCode}_${safeAy}_${safeSem}`;
+                if (nextVersion > 1) {
+                    fileName += `_v${nextVersion}`;
+                }
+                document.getElementById('scan-doc-name').value = fileName;
+            }
+        };
+        
+        document.getElementById('scan-office-id')?.addEventListener('change', updateScannerFilename);
+        document.getElementById('scan-doc-type-id')?.addEventListener('change', updateScannerFilename);
+        document.getElementById('scan-ay')?.addEventListener('change', updateScannerFilename);
+        document.getElementById('scan-semester')?.addEventListener('change', updateScannerFilename);
+    });
 
     function closeScannerModal() {
         stopModalCamera();
@@ -685,7 +1050,15 @@ if (!$selected_doc && $queue_count > 0) {
         canvas.height = video.videoHeight;
         
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+        
+        // Auto detect borders and warp to landscape rectangular sheet
+        const corners = ScannerProcessor.detectDocumentCorners(canvas);
+        const warpedCanvas = document.createElement('canvas');
+        warpedCanvas.width = 1200;
+        warpedCanvas.height = 848;
+        ScannerProcessor.warpDocument(canvas, warpedCanvas, corners);
+        
+        const dataUrl = warpedCanvas.toDataURL('image/jpeg', 0.9);
         
         pageCounter++;
         pages.push({
@@ -775,19 +1148,7 @@ if (!$selected_doc && $queue_count > 0) {
                 ctx.restore();
                 
                 if (page.enhanced) {
-                    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                    const data = imgData.data;
-                    for (let i = 0; i < data.length; i += 4) {
-                        const r = data[i];
-                        const g = data[i+1];
-                        const b = data[i+2];
-                        let v = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-                        v = v > 120 ? 255 : v * 0.5;
-                        data[i] = v;
-                        data[i+1] = v;
-                        data[i+2] = v;
-                    }
-                    ctx.putImageData(imgData, 0, 0);
+                    ScannerProcessor.applySmartEnhancement(canvas);
                 }
                 resolve();
             };
@@ -815,7 +1176,7 @@ if (!$selected_doc && $queue_count > 0) {
             const item = document.createElement('div');
             item.className = "flex items-center gap-3 p-3 bg-gray-50 border border-gray-200 rounded-lg group";
             item.innerHTML = `
-                <div class="w-14 h-18 bg-black rounded overflow-hidden flex items-center justify-center border border-gray-300 flex-shrink-0">
+                <div class="w-18 h-14 bg-black rounded overflow-hidden flex items-center justify-center border border-gray-300 flex-shrink-0">
                     <canvas id="thumb-canvas-${p.id}" class="w-full h-full object-contain"></canvas>
                 </div>
                 <div class="flex-1 min-w-0">
@@ -845,6 +1206,20 @@ if (!$selected_doc && $queue_count > 0) {
     async function stageAndSaveScan() {
         if (pages.length === 0) return;
         
+        const officeId = document.getElementById('scan-office-id').value;
+        const docTypeId = document.getElementById('scan-doc-type-id').value;
+        const ay = document.getElementById('scan-ay').value;
+        const semester = document.getElementById('scan-semester').value;
+
+        if (!officeId) {
+            alert('Please select an Office/Unit.');
+            return;
+        }
+        if (!docTypeId) {
+            alert('Please select a Document Type.');
+            return;
+        }
+        
         const saveBtn = document.getElementById('save-scan-btn');
         const originalHtml = saveBtn.innerHTML;
         saveBtn.disabled = true;
@@ -852,7 +1227,7 @@ if (!$selected_doc && $queue_count > 0) {
         
         try {
             const { jsPDF } = window.jspdf;
-            const doc = new jsPDF('p', 'mm', 'a4');
+            const doc = new jsPDF('l', 'mm', 'a4');
             const pdfWidth = doc.internal.pageSize.getWidth();
             const pdfHeight = doc.internal.pageSize.getHeight();
             
@@ -873,14 +1248,19 @@ if (!$selected_doc && $queue_count > 0) {
             if (!docName) {
                 docName = 'Scanned_Doc_' + Math.floor(Date.now() / 1000);
             }
-            docName = docName.replace(/[^A-Za-z0-9_-]/g, '_') + '.pdf';
+            if (!docName.toLowerCase().endsWith('.pdf')) {
+                docName = docName.replace(/[^A-Za-z0-9_-]/g, '_') + '.pdf';
+            }
             
             const pdfBlob = doc.output('blob');
             
             // Submit PDF to database via AJAX/FormData
             const formData = new FormData();
             formData.append('action', 'upload_scan');
-            formData.append('document_id', <?php echo json_encode($selected_doc['document_id'] ?? null); ?>);
+            formData.append('academic_year', ay);
+            formData.append('semester', semester);
+            formData.append('office_id', officeId);
+            formData.append('doc_type_id', docTypeId);
             formData.append('scanned_document', pdfBlob, docName);
             
             const response = await fetch('review_submissions.php', {
@@ -906,84 +1286,128 @@ if (!$selected_doc && $queue_count > 0) {
     }
 </script>
 
-<?php if ($selected_doc): ?>
 <!-- Floating Action Button for Scanning -->
-<button id="floating-scan-btn" onclick="openScannerModal()" class="fixed bottom-6 right-6 w-14 h-14 bg-[#800000] hover:bg-red-900 text-white rounded-full flex items-center justify-center shadow-2xl z-40 transition-all duration-300 transform hover:scale-110 active:scale-95 group focus:outline-none no-print" title="Scan Document">
+<button id="floating-scan-btn" onclick="openScannerModal()" class="fixed bottom-6 right-6 w-14 h-14 bg-[#800000] hover:bg-red-900 text-white rounded-full flex items-center justify-center shadow-2xl z-40 transition-all duration-300 transform hover:scale-110 active:scale-95 group focus:outline-none no-print shadow-red-950/20" title="Scan Document">
     <i class="fas fa-camera text-xl group-hover:rotate-12 transition-transform duration-300"></i>
-    <span class="absolute right-16 bg-gray-900 text-white text-xs px-2.5 py-1.5 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none whitespace-nowrap font-medium">Multi-Page Scanner</span>
+    <span class="absolute right-16 bg-gray-900 text-white text-xs px-2.5 py-1.5 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none whitespace-nowrap font-medium font-sans">Scan New Document</span>
 </button>
-<?php endif; ?>
 
-<!-- Modern Scanner Modal Overlay -->
-<div id="scannerModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center z-50 p-4 md:p-6 backdrop-blur-sm">
-    <div class="bg-white rounded-xl shadow-2xl max-w-4xl w-full h-[85vh] flex flex-col overflow-hidden animate-slide-up">
+<canvas id="enhance-canvas" class="hidden"></canvas>
+        </main>
+    </div>
+
+<!-- Modern Scanner Modal Overlay (Moved outside main to cover sidebar) -->
+<div id="scannerModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center z-[9999] p-4 md:p-6 backdrop-blur-sm">
+    <div class="bg-white rounded-xl shadow-2xl max-w-4xl w-full h-[90vh] md:h-[85vh] flex flex-col overflow-hidden animate-slide-up">
         <!-- Modal Header -->
-        <div class="px-6 py-4 border-b border-gray-200 bg-gray-50 flex items-center justify-between flex-shrink-0">
+        <div class="px-6 py-4 bg-[#800000] text-white flex items-center justify-between flex-shrink-0">
             <div class="flex items-center gap-3">
-                <div class="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center text-[#800000] text-lg">
-                    <i class="fas fa-print"></i>
-                </div>
+                <i class="fas fa-print text-lg"></i>
                 <div>
-                    <h3 class="font-bold text-gray-900">Multi-Page Document Scanner</h3>
-                    <p class="text-xs text-gray-500">Scan multiple pages, apply rotation/contrast, and save as PDF</p>
+                    <h3 class="font-bold text-sm md:text-base">Multi-Page Document Scanner</h3>
+                    <p class="text-[10px] md:text-xs text-red-200">Scan multiple pages, apply rotation/contrast, and save as PDF</p>
                 </div>
             </div>
-            <button onclick="closeScannerModal()" class="text-gray-400 hover:text-gray-600 focus:outline-none p-1.5 rounded-lg hover:bg-gray-100 transition-colors">
+            <button onclick="closeScannerModal()" class="text-white hover:text-gray-200 focus:outline-none p-1.5 rounded-lg hover:bg-red-900 transition-colors">
                 <i class="fas fa-times text-xl"></i>
             </button>
         </div>
         
         <!-- Modal Body -->
-        <div class="flex-1 min-h-0 flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-gray-200">
+        <div class="flex-1 min-h-0 flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-gray-200 overflow-y-auto md:overflow-hidden">
             <!-- Camera Capture Area -->
-            <div class="flex-1 p-6 flex flex-col justify-between min-h-0 bg-gray-900 text-white relative">
+            <div class="w-full md:flex-1 h-[260px] md:h-auto p-4 md:p-6 flex flex-col bg-gray-900 text-white relative flex-shrink-0">
                 <div class="flex-1 flex items-center justify-center bg-black/40 rounded-lg overflow-hidden relative" id="scanner-viewfinder">
                     <video id="modal-video" autoplay playsinline muted class="w-full h-full object-contain hidden"></video>
                     <div id="scanner-helper" class="absolute inset-8 border-2 border-dashed border-white/50 rounded-lg pointer-events-none flex items-center justify-center hidden">
                         <span class="text-xs text-white/50 bg-black/60 px-3 py-1 rounded-full uppercase tracking-wider font-semibold">Align Document Here</span>
                     </div>
                     <div id="camera-standby" class="flex flex-col items-center gap-3">
-                        <i class="fas fa-video-slash text-4xl text-gray-500"></i>
-                        <p class="text-sm text-gray-400 font-medium">Camera is offline</p>
-                        <button onclick="startModalCamera()" class="px-4 py-2 bg-[#800000] hover:bg-red-900 text-white rounded-lg text-xs font-bold transition shadow-md flex items-center gap-1.5">
+                        <i class="fas fa-video-slash text-2xl md:text-4xl text-gray-500"></i>
+                        <p class="text-xs md:text-sm text-gray-400 font-medium">Camera is offline</p>
+                        <button onclick="startModalCamera()" class="px-3 py-1.5 bg-[#800000] hover:bg-red-900 text-white rounded-lg text-[10px] md:text-xs font-bold transition shadow-md flex items-center gap-1.5">
                             <i class="fas fa-power-off"></i> Turn Camera On
                         </button>
                     </div>
                 </div>
                 
-                <div class="mt-4 flex gap-3 justify-center">
-                    <button type="button" id="modal-capture-btn" onclick="capturePage()" class="px-6 py-3 bg-[#800000] hover:bg-red-900 text-white rounded-xl text-sm font-bold transition shadow-lg flex items-center gap-2" disabled>
-                        <i class="fas fa-camera text-base"></i> Capture Page
+                <div class="mt-3 flex justify-center flex-shrink-0">
+                    <button type="button" id="modal-capture-btn" onclick="capturePage()" class="px-5 py-2.5 bg-[#800000] hover:bg-red-900 text-white rounded-xl text-xs font-bold transition shadow-lg flex items-center gap-2" disabled>
+                        <i class="fas fa-camera text-sm"></i> Capture Page
                     </button>
                 </div>
             </div>
             
             <!-- Staged Pages Area -->
-            <div class="w-full md:w-96 p-6 flex flex-col justify-between bg-white min-h-0">
-                <div class="flex-1 flex flex-col min-h-0">
-                    <div class="flex items-center justify-between mb-4 flex-shrink-0">
-                        <span class="text-xs font-bold text-gray-500 uppercase tracking-wider">Scanned Pages</span>
+            <div class="w-full md:w-96 p-4 md:p-6 flex flex-col justify-between bg-white min-h-0 flex-shrink-0 md:flex-shrink md:overflow-hidden">
+                <div class="flex-shrink-0 flex flex-col min-h-0 md:flex-1 md:overflow-hidden">
+                    <div class="flex items-center justify-between mb-3 flex-shrink-0">
+                        <span class="text-[10px] md:text-xs font-bold text-gray-500 uppercase tracking-wider">Scanned Pages</span>
                         <span id="page-count" class="bg-gray-100 text-gray-800 text-xs px-2.5 py-1 rounded-full font-bold">0 Pages</span>
                     </div>
                     
-                    <div id="pages-gallery" class="flex-1 overflow-y-auto space-y-3 pr-1 min-h-0">
-                        <div class="h-full flex flex-col items-center justify-center text-gray-400 py-12">
-                            <i class="fas fa-file-invoice text-3xl mb-2 text-gray-300"></i>
-                            <p class="text-xs text-center">No pages scanned yet.<br>Click "Capture Page" to start adding pages.</p>
+                    <div id="pages-gallery" class="w-full h-40 md:h-auto md:flex-1 overflow-y-auto space-y-2 pr-1 border border-gray-100 rounded-lg p-2 bg-gray-50/50">
+                        <div class="flex flex-col items-center justify-center text-gray-400 py-6">
+                            <i class="fas fa-file-invoice text-xl mb-1 text-gray-300"></i>
+                            <p class="text-[10px] text-center">No pages scanned yet.<br>Click "Capture Page" to start.</p>
                         </div>
                     </div>
                 </div>
                 
-                <div class="mt-6 border-t border-gray-100 pt-4 flex-shrink-0 space-y-4">
+                <div class="mt-3 border-t border-gray-100 pt-3 flex-shrink-0 space-y-2.5 font-sans">
+                    <h4 class="text-[10px] md:text-xs font-bold text-[#800000] uppercase tracking-wider">Document Parameters</h4>
+                    
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                             <label class="block text-[9px] font-bold text-gray-500 uppercase mb-0.5">Academic Year</label>
+                             <select id="scan-ay" class="w-full px-2 py-1 border border-gray-300 rounded-lg text-[10px] outline-none focus:ring-1 focus:ring-[#800000]">
+                                 <?php foreach($all_academic_years as $ay): ?>
+                                     <option value="<?php echo htmlspecialchars($ay); ?>" <?php echo $ay === $active_year ? 'selected' : ''; ?>><?php echo htmlspecialchars($ay); ?></option>
+                                 <?php endforeach; ?>
+                             </select>
+                        </div>
+                        
+                        <div>
+                             <label class="block text-[9px] font-bold text-gray-500 uppercase mb-0.5">Period / Semester</label>
+                             <select id="scan-semester" class="w-full px-2 py-1 border border-gray-300 rounded-lg text-[10px] outline-none focus:ring-1 focus:ring-[#800000]">
+                                 <?php foreach($all_semesters as $sem): ?>
+                                     <option value="<?php echo htmlspecialchars($sem); ?>" <?php echo $sem === $active_semester ? 'selected' : ''; ?>><?php echo htmlspecialchars($sem); ?></option>
+                                 <?php endforeach; ?>
+                             </select>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                             <label class="block text-[9px] font-bold text-gray-500 uppercase mb-0.5">Office / Unit</label>
+                             <select id="scan-office-id" class="w-full px-2 py-1 border border-gray-300 rounded-lg text-[10px] outline-none focus:ring-1 focus:ring-[#800000]">
+                                 <option value="" disabled selected>-- Select Office --</option>
+                                 <?php foreach($scanner_offices as $off): ?>
+                                     <option value="<?php echo $off['office_id']; ?>"><?php echo htmlspecialchars($off['office_name'] . ' (' . $off['office_code'] . ')'); ?></option>
+                                 <?php endforeach; ?>
+                             </select>
+                        </div>
+    
+                        <div>
+                             <label class="block text-[9px] font-bold text-gray-500 uppercase mb-0.5">Document Type</label>
+                             <select id="scan-doc-type-id" class="w-full px-2 py-1 border border-gray-300 rounded-lg text-[10px] outline-none focus:ring-1 focus:ring-[#800000]">
+                                 <option value="" disabled selected>-- Select Type --</option>
+                                 <?php foreach($scanner_doc_types as $dt): ?>
+                                     <option value="<?php echo $dt['doc_type_id']; ?>"><?php echo htmlspecialchars($dt['description'] . ' (' . $dt['doc_code'] . ')'); ?></option>
+                                 <?php endforeach; ?>
+                             </select>
+                        </div>
+                    </div>
+
                     <div>
-                         <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Save Scanned Document As</label>
+                         <label class="block text-[9px] font-bold text-gray-500 uppercase mb-0.5">Save Scanned Document As</label>
                          <div class="relative">
-                             <input type="text" id="scan-doc-name" placeholder="e.g. QOP_UnitReport" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#800000] focus:border-transparent">
-                             <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-gray-400 pointer-events-none">.pdf</span>
+                             <input type="text" id="scan-doc-name" placeholder="e.g. QOP_Report" class="w-full px-2 py-1 border border-gray-300 rounded-lg text-[10px] outline-none focus:ring-1 focus:ring-[#800000] focus:border-transparent">
+                             <span class="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-gray-400 pointer-events-none">.pdf</span>
                          </div>
                     </div>
                     
-                    <button type="button" onclick="stageAndSaveScan()" id="save-scan-btn" class="w-full py-3 bg-[#800000] hover:bg-red-900 text-white rounded-lg text-sm font-bold transition shadow-lg flex items-center justify-center gap-2" disabled>
+                    <button type="button" onclick="stageAndSaveScan()" id="save-scan-btn" class="w-full py-2 bg-[#800000] hover:bg-red-900 text-white rounded-lg text-xs font-bold transition shadow-lg flex items-center justify-center gap-2" disabled>
                         <i class="fas fa-file-pdf"></i> Compile PDF & Upload
                     </button>
                 </div>
@@ -991,7 +1415,8 @@ if (!$selected_doc && $queue_count > 0) {
         </div>
     </div>
 </div>
-
-<canvas id="enhance-canvas" class="hidden"></canvas>
+        </div>
+    </div>
+</div>
 </body>
 </html>

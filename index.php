@@ -1,8 +1,6 @@
 <?php
-// Redirect to the API wrapper for Vercel deployment
-header('Location: /api/index.php');
-exit();
-?>
+session_start();
+include "config/db.php";
 
 $message = "";
 
@@ -22,6 +20,7 @@ if (isset($_POST['submit'])) {
             $_SESSION['full_name'] = $user['full_name'];
             $_SESSION['role'] = $user['role'];
             $_SESSION['office_id'] = $user['office_id'] ?? null;
+            $_SESSION['profile_photo'] = $user['profile_photo'] ?? null;
 
             if($user['role'] === 'QMO Admin'){
                 header("Location: dashboard/qmo/index.php");
@@ -43,10 +42,11 @@ if (isset($_POST['submit'])) {
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="icon" type="image/jpeg" href="assets/img/ua-qms-logo.jpg">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UA QMS | Login</title>
-    <link rel="stylesheet" href="assets/css/login.css?v=1.2.1">
+    <link rel="stylesheet" href="assets/css/login.css?v=1.2.7">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
@@ -54,7 +54,10 @@ if (isset($_POST['submit'])) {
     <main class="login-shell">
         <section class="brand-panel" aria-label="UA QMS information">
             <div class="seal-row">
-                <img src="assets/img/ua-qms-logo.jpg" alt="University of Antique seal">
+                <div class="logos-container">
+                    <img src="assets/img/ua-qms-logo.jpg" alt="University of Antique seal" class="uni-logo">
+                    <img src="assets/img/ISO.png" alt="ISO Logo" class="iso-logo">
+                </div>
                 <div class="institution-copy">
                     <p class="eyebrow">UNIVERSITY OF ANTIQUE</p>
                     <p class="campus-line">TARIO-LIM MEMORIAL CAMPUS</p>

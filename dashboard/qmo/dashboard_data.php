@@ -1,6 +1,7 @@
 <?php
 session_start();
-include "../../config/db.php";
+require_once __DIR__ . "/../../config/db.php";
+require_once __DIR__ . "/../../includes/system_settings.php";
 
 header('Content-Type: application/json');
 
@@ -40,17 +41,10 @@ function fetch_rows($stmt) {
     return $rows;
 }
 
-$settings = [];
-$settings_result = $conn->query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('active_academic_year')");
-if ($settings_result) {
-    while ($row = $settings_result->fetch_assoc()) {
-        $settings[$row['setting_key']] = $row['setting_value'];
-    }
-}
-
+$period = ua_qms_get_active_period($conn);
+$selected_year = $_GET['year'] ?? $period['active_year'];
 $quarters = ['1st Quarter', '2nd Quarter', '3rd Quarter', '4th Quarter'];
-$selected_year = $_GET['year'] ?? ($settings['active_academic_year'] ?? date('Y') . '-' . (date('Y') + 1));
-$selected_quarter = in_array(($_GET['quarter'] ?? ''), $quarters, true) ? $_GET['quarter'] : '1st Quarter';
+$selected_quarter = in_array(($_GET['quarter'] ?? ''), $quarters, true) ? $_GET['quarter'] : $period['active_semester'];
 $selected_ay_range = $selected_year;
 
 $stats = ['total' => 0, 'pending' => 0, 'approved' => 0, 'revision' => 0, 'rejected' => 0];
@@ -106,12 +100,11 @@ $stmt = $conn->prepare("
     SELECT ts.deadline, ts.quarter, dt.doc_code, dt.description
     FROM target_submissions ts
     JOIN document_types dt ON ts.doc_type_id = dt.doc_type_id
-    WHERE ts.year = ? AND ts.quarter = ?
+    WHERE ts.year = ?
     ORDER BY ts.deadline ASC
     LIMIT 6
 ");
-$ta_year = substr($selected_year, 0, 4);
-$stmt->bind_param("ss", $ta_year, $selected_quarter);
+    $stmt->bind_param("s", $selected_year);
 $deadlines = fetch_rows($stmt);
 
 $stmt = $conn->prepare("

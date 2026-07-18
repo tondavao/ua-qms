@@ -1,6 +1,7 @@
 <?php
 session_start();
-include "../../config/db.php";
+require_once __DIR__ . "/../../config/db.php";
+require_once __DIR__ . "/../../includes/system_settings.php";
 
 if (!isset($_SESSION['role']) || ($_SESSION['role'] != 'Dean' && $_SESSION['role'] != 'Office')) {
     header('Location: ../../index.php');
@@ -10,14 +11,9 @@ if (!isset($_SESSION['role']) || ($_SESSION['role'] != 'Dean' && $_SESSION['role
 $office_id = $_SESSION['office_id'] ?? 0;
 
 // Load active academic year and active semester from system configurations
-$sql_settings = "SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('active_academic_year', 'active_semester')";
-$result_settings = $conn->query($sql_settings);
-$settings = [];
-while ($row = $result_settings->fetch_assoc()) {
-    $settings[$row['setting_key']] = $row['setting_value'];
-}
-$active_year = $settings['active_academic_year'] ?? date('Y') . '-' . (date('Y') + 1);
-$active_semester = $settings['active_semester'] ?? '1st Semester';
+$period = ua_qms_get_active_period($conn);
+$active_year = $period['active_year'];
+$active_semester = $period['active_semester'];
 
 // Get list of academic years and semesters for dropdown filters
 $academic_years_list = [];
@@ -32,8 +28,19 @@ while ($row = $res_sem->fetch_assoc()) {
     $semesters_list[] = $row['semester_name'];
 }
 
+$doc_types_list = [];
+$res_dt = $conn->query("SELECT doc_type_id, doc_code, description FROM document_types ORDER BY doc_code ASC");
+if ($res_dt) {
+    while ($row = $res_dt->fetch_assoc()) {
+        $doc_types_list[] = $row;
+    }
+}
+
 $selected_ay = $_GET['ay'] ?? $active_year;
 $selected_sem = $_GET['sem'] ?? $active_semester;
+$selected_status = $_GET['status'] ?? 'All';
+$selected_dt = $_GET['dt'] ?? 'All';
+$search_query = $_GET['search'] ?? '';
 
 $sql = "SELECT 
             d.document_id,
@@ -73,6 +80,27 @@ if ($selected_sem !== 'All') {
     $types .= "s";
 }
 
+if ($selected_status !== 'All') {
+    $sql .= " AND d.status = ?";
+    $params[] = $selected_status;
+    $types .= "s";
+}
+
+if ($selected_dt !== 'All') {
+    $sql .= " AND d.doc_type_id = ?";
+    $params[] = $selected_dt;
+    $types .= "i";
+}
+
+if (!empty($search_query)) {
+    $sql .= " AND (d.file_name LIKE ? OR dt.doc_code LIKE ? OR dt.description LIKE ?)";
+    $search_term = "%" . $search_query . "%";
+    $params[] = $search_term;
+    $params[] = $search_term;
+    $params[] = $search_term;
+    $types .= "sss";
+}
+
 $sql .= " ORDER BY d.submitted_at DESC, dr.reviewed_at DESC";
 
 $stmt = $conn->prepare($sql);
@@ -95,6 +123,7 @@ $submissions = array_values($docs);
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="icon" type="image/jpeg" href="../../assets/img/ua-qms-logo.jpg">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>My Submissions | UA QMS</title>
@@ -137,14 +166,14 @@ $submissions = array_values($docs);
 </head>
 <body class="bg-gray-50">
     <div class="flex h-screen overflow-hidden">
-        <?php include "../../includes/sidebar_dean.php"; ?>
+        <?php require_once __DIR__ . "/../../includes/sidebar_dean.php"; ?>
 
         <!-- Main Content -->
         <main class="flex-1 flex flex-col overflow-hidden">
             <!-- Topbar -->
-            <header class="h-20 bg-white border-b border-gray-200 flex items-center justify-between px-8 flex-shrink-0">
-                <div class="flex items-center gap-3">
-                    <h1 class="text-lg font-bold text-gray-900 leading-tight">My Submissions</h1>
+            <header class="h-20 bg-white border-b border-gray-200 flex items-center justify-between px-4 md:px-8 flex-shrink-0 sticky top-0 z-50">
+                <div class="flex items-center gap-3 min-w-0">
+                    <h1 class="text-base md:text-lg font-bold text-gray-900 leading-tight truncate">My Submissions</h1>
                 </div>
                 <div class="flex items-center gap-6">
                     <!-- Clock -->
@@ -162,9 +191,13 @@ $submissions = array_values($docs);
                         </button>
                         <!-- Profile Dropdown -->
                         <div class="relative">
-                            <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition">
-                                <?php echo isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'; ?>
-                            </button>
+                            <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition overflow-hidden">
+                            <?php if (!empty($_SESSION['profile_photo'])): ?>
+                                <img src="<?php echo htmlspecialchars($_SESSION['profile_photo']); ?>" class="w-full h-full object-cover rounded-full" alt="Profile" />
+                            <?php else: ?>
+                                <?php echo htmlspecialchars(isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'); ?>
+                            <?php endif; ?>
+                        </button>
                             <div id="profile-dropdown" class="profile-dropdown">
                                 <div class="profile-dropdown-header">
                                     <p><?php echo htmlspecialchars($_SESSION['full_name'] ?? 'User'); ?></p>
@@ -185,11 +218,34 @@ $submissions = array_values($docs);
 
 
                     <!-- Filter Bar -->
-                    <div class="bg-white p-4 rounded-xl border border-gray-200 shadow-sm mb-6 flex flex-col md:flex-row gap-4 justify-between items-center no-print">
-                        <form method="GET" class="flex flex-wrap gap-4 items-center w-full md:w-auto">
-                            <div class="flex items-center gap-2">
-                                <label for="ay-select" class="text-sm font-semibold text-gray-700">Academic Year:</label>
-                                <select id="ay-select" name="ay" onchange="this.form.submit()" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-[#800000] outline-none">
+                    <div class="bg-white p-5 rounded-xl border border-gray-200 shadow-sm mb-6 no-print">
+                        <form method="GET" class="flex flex-col xl:flex-row gap-4 items-end w-full">
+                            <!-- Search Input -->
+                            <div class="w-full xl:w-48">
+                                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Search</label>
+                                <div class="relative">
+                                    <i class="fas fa-search absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400"></i>
+                                    <input type="text" name="search" value="<?php echo htmlspecialchars($search_query); ?>" placeholder="Search submissions..." class="w-full pl-8 pr-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none text-xs">
+                                </div>
+                            </div>
+
+                            <!-- Document Type Filter -->
+                            <div class="w-full xl:flex-1 min-w-[120px]">
+                                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Document Type</label>
+                                <select id="dt-select" name="dt" class="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none text-xs bg-white">
+                                    <option value="All" <?php echo $selected_dt === 'All' ? 'selected' : ''; ?>>All Types</option>
+                                    <?php foreach ($doc_types_list as $dt): ?>
+                                        <option value="<?php echo $dt['doc_type_id']; ?>" <?php echo $selected_dt == $dt['doc_type_id'] ? 'selected' : ''; ?>>
+                                            <?php echo htmlspecialchars($dt['doc_code'] . ' - ' . $dt['description']); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+
+                            <!-- Academic Year Filter -->
+                            <div class="w-full xl:flex-1 min-w-[100px]">
+                                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Academic Year</label>
+                                <select id="ay-select" name="ay" class="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none text-xs bg-white">
                                     <option value="All" <?php echo $selected_ay === 'All' ? 'selected' : ''; ?>>All Years</option>
                                     <?php foreach ($academic_years_list as $ay): ?>
                                         <option value="<?php echo htmlspecialchars($ay); ?>" <?php echo $selected_ay === $ay ? 'selected' : ''; ?>>
@@ -198,10 +254,12 @@ $submissions = array_values($docs);
                                     <?php endforeach; ?>
                                 </select>
                             </div>
-                            <div class="flex items-center gap-2">
-                                <label for="sem-select" class="text-sm font-semibold text-gray-700">Period:</label>
-                                <select id="sem-select" name="sem" onchange="this.form.submit()" class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-[#800000] outline-none">
-                                    <option value="All" <?php echo $selected_sem === 'All' ? 'selected' : ''; ?>>All Quarters</option>
+
+                            <!-- Period Filter -->
+                            <div class="w-full xl:flex-1 min-w-[100px]">
+                                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Period</label>
+                                <select id="sem-select" name="sem" class="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none text-xs bg-white">
+                                    <option value="All" <?php echo $selected_sem === 'All' ? 'selected' : ''; ?>>All Periods</option>
                                     <?php foreach ($semesters_list as $sem): ?>
                                         <option value="<?php echo htmlspecialchars($sem); ?>" <?php echo $selected_sem === $sem ? 'selected' : ''; ?>>
                                             <?php echo htmlspecialchars($sem); ?>
@@ -209,22 +267,35 @@ $submissions = array_values($docs);
                                     <?php endforeach; ?>
                                 </select>
                             </div>
-                            <?php if ($selected_ay !== $active_year || $selected_sem !== $active_semester): ?>
+
+                            <!-- Status Filter -->
+                            <div class="w-full xl:flex-1 min-w-[100px]">
+                                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Status</label>
+                                <select id="status-select" name="status" class="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none text-xs bg-white">
+                                    <option value="All" <?php echo $selected_status === 'All' ? 'selected' : ''; ?>>All Statuses</option>
+                                    <option value="Awaiting Review" <?php echo $selected_status === 'Awaiting Review' ? 'selected' : ''; ?>>Awaiting Review</option>
+                                    <option value="Approved" <?php echo $selected_status === 'Approved' ? 'selected' : ''; ?>>Approved</option>
+                                    <option value="Revision" <?php echo $selected_status === 'Revision' ? 'selected' : ''; ?>>Revision</option>
+                                </select>
+                            </div>
+
+                            <!-- Action Buttons -->
+                            <div class="flex gap-1.5 shrink-0 mt-2 xl:mt-0 w-full xl:w-auto justify-end">
                                 <a href="my_submissions.php" class="px-3 py-1.5 bg-red-50 text-[#800000] border border-red-200 rounded-lg text-xs font-bold hover:bg-[#800000] hover:text-white transition flex items-center justify-center gap-1 shadow-sm" title="Reset Filters">
                                     <i class="fas fa-redo"></i> Reset
                                 </a>
-                            <?php endif; ?>
+                                <button type="submit" class="px-3 py-1.5 bg-[#800000] text-white rounded-lg text-xs font-bold hover:bg-red-900 transition flex items-center justify-center gap-1 shadow-sm">
+                                    <i class="fas fa-filter"></i> Apply
+                                </button>
+                            </div>
                         </form>
-                        <div class="text-xs text-gray-500 font-medium">
-                            Viewing: <span class="font-bold text-[#800000]"><?php echo htmlspecialchars($selected_sem); ?> (AY <?php echo htmlspecialchars($selected_ay); ?>)</span>
-                        </div>
                     </div>
 
                     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                         <div class="p-6 border-b border-gray-100 flex justify-between items-center no-print">
                             <h3 class="font-bold text-gray-900">Document Submission History</h3>
-                            <a href="submit_document.php" class="px-4 py-2 bg-[#800000] text-white rounded-xl text-sm font-bold hover:bg-[#600000] transition-colors">
-                                <i data-lucide="plus" class="w-4 h-4 inline mr-1"></i> New Submission
+                            <a href="submit_document.php" class="px-4 py-2 bg-[#800000] text-white rounded-xl text-sm font-bold hover:bg-[#600000] transition-colors flex items-center justify-center gap-2">
+                                <i class="fas fa-plus text-xs"></i> New Submission
                             </a>
                         </div>
                         
@@ -250,26 +321,26 @@ $submissions = array_values($docs);
                                         </tr>
                                     <?php else: ?>
                                         <?php foreach($submissions as $sub): ?>
-                                            <tr class="hover:bg-gray-50/50 transition-colors submission-row" data-doc-id="<?php echo $sub['document_id']; ?>">
-                                                <td class="px-6 py-4">
-                                                    <span class="font-bold text-gray-900"><?php echo $sub['doc_code']; ?></span>
-                                                    <p class="text-[10px] text-gray-400"><?php echo htmlspecialchars($sub['description']); ?></p>
+                                            <?php 
+                                                $rowBgClass = $sub['status'] === 'Revision' ? 'bg-red-50/40 hover:bg-red-50/60 border-l-4 border-l-[#800000]' : 'hover:bg-gray-50/50';
+                                            ?>
+                                            <tr class="transition-colors submission-row <?php echo $rowBgClass; ?>" data-doc-id="<?php echo $sub['document_id']; ?>">
+                                                <td class="px-6 py-4 whitespace-normal max-w-[200px]">
+                                                    <span class="font-bold text-gray-900 leading-tight block"><?php echo htmlspecialchars($sub['description'] . ' (' . $sub['doc_code'] . ')'); ?></span>
                                                 </td>
-                                                <td class="px-6 py-4 text-sm text-gray-600">
-                                                    <span class="font-semibold text-gray-800"><?php echo htmlspecialchars($sub['semester'] ?? 'N/A'); ?></span>
-                                                    <p class="text-xs text-gray-400">AY <?php echo htmlspecialchars($sub['academic_year'] ?? 'N/A'); ?></p>
+                                                <td class="px-6 py-4 text-sm text-gray-600 whitespace-nowrap">
+                                                    <span class="font-semibold text-gray-800"><?php echo htmlspecialchars(($sub['semester'] ?? 'N/A') . ' ' . ($sub['academic_year'] ?? 'N/A')); ?></span>
                                                 </td>
-                                                <td class="px-6 py-4 text-sm text-gray-600">
-                                                    <?php echo htmlspecialchars($sub['file_name']); ?>
+                                                <td class="px-6 py-4 text-sm text-gray-600 whitespace-nowrap">
+                                                    <span class="truncate max-w-[130px] inline-block align-middle" title="<?php echo htmlspecialchars($sub['file_name']); ?>"><?php echo htmlspecialchars($sub['file_name']); ?></span>
                                                     <?php if(isset($sub['version_number']) && $sub['version_number'] > 1): ?>
-                                                        <span class="bg-[#800000] text-white text-[10px] font-bold px-2 py-0.5 rounded-md ml-2 shadow-sm border border-red-900"><i class="fas fa-code-branch mr-1"></i>Version <?php echo htmlspecialchars($sub['version_number']); ?></span>
+                                                        <span class="bg-[#800000] text-white text-[10px] font-bold px-2 py-0.5 rounded-md ml-2 shadow-sm border border-red-900 inline-block align-middle"><i class="fas fa-code-branch mr-1"></i>Version <?php echo htmlspecialchars($sub['version_number']); ?></span>
                                                     <?php endif; ?>
                                                 </td>
-                                                <td class="px-6 py-4 text-sm text-gray-500">
-                                                    <?php echo date('M d, Y', strtotime($sub['submitted_at'])); ?>
-                                                    <p class="text-[10px]"><?php echo date('H:i', strtotime($sub['submitted_at'])); ?></p>
+                                                <td class="px-6 py-4 text-sm text-gray-500 whitespace-nowrap">
+                                                    <?php echo date('M d, Y, g:i A', strtotime($sub['submitted_at'])); ?>
                                                 </td>
-                                                <td class="px-6 py-4">
+                                                <td class="px-6 py-4 whitespace-nowrap">
                                                     <?php 
                                                         $statusClass = 'badge-awaiting';
                                                         if($sub['status'] == 'Approved') $statusClass = 'badge-approved';
@@ -280,34 +351,31 @@ $submissions = array_values($docs);
                                                     </span>
                                                 </td>
 
-                                                <td class="px-6 py-4 no-print">
-    <div class="flex gap-2">
+                                                <td class="px-6 py-4 no-print whitespace-nowrap">
+                                                    <div class="flex gap-1.5 items-center flex-nowrap">
+                                                        <button 
+                                                            onclick="openUniversalFileViewer(
+                                                                '<?php echo htmlspecialchars($sub['file_path']); ?>',
+                                                                '<?php echo htmlspecialchars($sub['preview_path'] ?? $sub['file_path']); ?>',
+                                                                '<?php echo htmlspecialchars($sub['file_name']); ?>'
+                                                            )"
+                                                            class="px-2.5 py-1.5 bg-[#800000] text-white text-[11px] font-bold rounded-lg hover:bg-red-950 hover:shadow-sm transition-all uppercase inline-flex items-center justify-center gap-1">
+                                                            <i class="fas fa-eye text-[8px]"></i> PREVIEW
+                                                        </button>
 
-        <button 
-            onclick="openUniversalFileViewer(
-                '<?php echo htmlspecialchars($sub['file_path']); ?>',
-                '<?php echo htmlspecialchars($sub['preview_path'] ?? $sub['file_path']); ?>',
-                '<?php echo htmlspecialchars($sub['file_name']); ?>'
-            )"
-            class="px-4 py-2 bg-gray-100 text-gray-700 text-xs font-bold rounded-lg hover:bg-[#800000] hover:text-white transition-all">
-            PREVIEW
-        </button>
-
-        <?php if($sub['status'] == 'Revision'): ?>
-            <a href="submit_document.php?re-submit=<?php echo $sub['document_id']; ?>" 
-               class="p-2 text-orange-600 hover:bg-orange-50 rounded-lg transition-colors" 
-               title="Re-submit">
-                <i data-lucide="refresh-cw" class="w-4 h-4"></i>
-            </a>
-            <button onclick="confirmDeleteSubmission(<?php echo $sub['document_id']; ?>)" 
-                    class="p-2 text-[#800000] hover:bg-red-50 rounded-lg transition-colors" 
-                    title="Delete Submission">
-                <i data-lucide="trash-2" class="w-4 h-4"></i>
-            </button>
-        <?php endif; ?>
-
-    </div>
-</td>
+                                                        <?php if($sub['status'] == 'Revision'): ?>
+                                                            <a href="submit_document.php?re-submit=<?php echo $sub['document_id']; ?>" 
+                                                               class="px-2.5 py-1.5 bg-[#800000] text-white text-[11px] font-bold rounded-lg hover:bg-red-950 hover:shadow-sm transition-all uppercase inline-flex items-center justify-center gap-1">
+                                                                <i class="fas fa-edit text-[8px]"></i> RE-SUBMIT
+                                                            </a>
+                                                        <?php elseif($sub['status'] == 'Awaiting Review'): ?>
+                                                            <button onclick="confirmDeleteSubmission(<?php echo $sub['document_id']; ?>)" 
+                                                                    class="px-2.5 py-1.5 bg-red-50 text-[#800000] border border-red-200 text-[11px] font-bold rounded-lg hover:bg-[#800000] hover:text-white transition-all uppercase inline-flex items-center justify-center gap-1">
+                                                                <i class="fas fa-trash-alt text-[8px]"></i> DELETE
+                                                            </button>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                </td>
                                             </tr>
                                             <?php if(!empty($sub['review_remarks'])): ?>
                                                 <tr class="bg-gray-50/30">
@@ -327,34 +395,36 @@ $submissions = array_values($docs);
                     </div>
                 </div>
             </div>
+
+            <!-- Delete Confirmation Modal -->
+            <div id="delete-confirm-modal" class="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-[9999] flex items-center justify-center hidden opacity-0 transition-opacity duration-300">
+                <div class="bg-white rounded-xl max-w-md w-full mx-4 overflow-hidden shadow-xl transform scale-95 transition-transform duration-300">
+                    <div class="px-6 py-4 bg-[#800000] text-white flex items-center justify-between">
+                        <h3 class="font-bold flex items-center gap-2"><i class="fas fa-exclamation-triangle"></i> Delete Submission</h3>
+                        <button onclick="closeDeleteModal()" class="text-white hover:text-gray-200 transition"><i class="fas fa-times"></i></button>
+                    </div>
+                    <div class="p-6">
+                        <p class="text-sm text-gray-500 mb-6">Are you sure you want to delete this document submission? This action is permanent, and both the database record and uploaded file will be deleted.</p>
+                        <div class="flex justify-end gap-3">
+                            <button onclick="closeDeleteModal()" class="px-4 py-2 border border-gray-200 text-gray-700 text-sm font-semibold rounded-xl hover:bg-gray-50 transition">
+                                Cancel
+                            </button>
+                            <button id="confirm-delete-btn" class="px-4 py-2 bg-[#800000] text-white text-sm font-semibold rounded-xl hover:bg-[#600000] transition">
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Universal File Viewer Modal will be injected here by universal-file-viewer.js -->
         </main>
     </div>
 
-    <!-- Delete Confirmation Modal -->
-    <div id="delete-confirm-modal" class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm z-50 flex items-center justify-center hidden opacity-0 transition-opacity duration-300">
-        <div class="bg-white rounded-2xl max-w-md w-full mx-4 overflow-hidden shadow-xl transform scale-95 transition-transform duration-300">
-            <div class="p-6">
-                <div class="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center text-[#800000] mb-4">
-                    <i data-lucide="alert-triangle" class="w-6 h-6"></i>
-                </div>
-                <h3 class="text-lg font-bold text-gray-900 mb-2">Delete Submission</h3>
-                <p class="text-sm text-gray-500 mb-6">Are you sure you want to delete this document submission? This action is permanent, and both the database record and uploaded file will be deleted.</p>
-                <div class="flex justify-end gap-3">
-                    <button onclick="closeDeleteModal()" class="px-4 py-2 border border-gray-200 text-gray-700 text-sm font-semibold rounded-xl hover:bg-gray-50 transition">
-                        Cancel
-                    </button>
-                    <button id="confirm-delete-btn" class="px-4 py-2 bg-[#800000] text-white text-sm font-semibold rounded-xl hover:bg-[#600000] transition">
-                        Delete
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Universal File Viewer Modal will be injected here by universal-file-viewer.js -->
-
     <script>
-        lucide.createIcons();
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
 
         function printDocument(filePath, fileName) {
             const fileExt = fileName.split('.').pop().toLowerCase();
@@ -371,23 +441,6 @@ $submissions = array_values($docs);
             } else {
                 alert('Print preview not available for this file type. Please download and print manually.');
             }
-        }
-
-        // Profile Dropdown Toggle
-        const profileBtn = document.getElementById('profile-btn');
-        const profileDropdown = document.getElementById('profile-dropdown');
-        
-        if (profileBtn && profileDropdown) {
-            profileBtn.addEventListener('click', function() {
-                profileDropdown.classList.toggle('active');
-            });
-            
-            // Close dropdown when clicking outside
-            document.addEventListener('click', function(event) {
-                if (!event.target.closest('#profile-btn') && !event.target.closest('#profile-dropdown')) {
-                    profileDropdown.classList.remove('active');
-                }
-            });
         }
 
         // Real-time auto-update submissions list without page refresh
@@ -524,6 +577,10 @@ $submissions = array_values($docs);
                 }, 300);
             }, 3000);
         }
+
+        // Expose functions to global scope for inline HTML handlers (vital for PJAX execution)
+        window.confirmDeleteSubmission = confirmDeleteSubmission;
+        window.closeDeleteModal = closeDeleteModal;
     </script>
 </body>
 </html>

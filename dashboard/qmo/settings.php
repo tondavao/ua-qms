@@ -4,6 +4,11 @@ if(!isset($_SESSION['role']) || $_SESSION['role'] !== 'QMO Admin'){
     header("Location: ../../index.php"); 
     exit();
 }
+
+function h($value) {
+    return htmlspecialchars((string) ($value ?? ''), ENT_QUOTES, 'UTF-8');
+}
+
 require_once __DIR__ . "/../../config/db.php";
 require_once __DIR__ . "/../../includes/unit-seed.php";
 ua_qms_seed_default_units($conn);
@@ -11,11 +16,42 @@ ua_qms_seed_default_units($conn);
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="icon" type="image/jpeg" href="../../assets/img/ua-qms-logo.jpg">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UA QMS | Dynamic Academic & Office Configuration</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
+        // Global error logging for diagnostics
+        window.addEventListener('error', function(event) {
+            const errorDetails = {
+                message: event.message,
+                source: event.filename,
+                lineno: event.lineno,
+                colno: event.colno,
+                stack: event.error ? event.error.stack : ''
+            };
+            fetch('../../api/log_js_error.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(errorDetails)
+            }).catch(e => {});
+        });
+        window.addEventListener('unhandledrejection', function(event) {
+            const errorDetails = {
+                message: 'Unhandled Rejection: ' + (event.reason ? event.reason.message || event.reason : ''),
+                source: '',
+                lineno: 0,
+                colno: 0,
+                stack: event.reason && event.reason.stack ? event.reason.stack : ''
+            };
+            fetch('../../api/log_js_error.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(errorDetails)
+            }).catch(e => {});
+        });
+
         tailwind.config = {
             theme: {
                 extend: {
@@ -35,6 +71,27 @@ ua_qms_seed_default_units($conn);
         .text-ua-maroon { color: #800000; }
         .glass-card { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border: 1px solid rgba(229, 231, 235, 0.5); }
         .tab-btn.active { border-bottom: 2px solid #8b0000; color: #8b0000; font-weight: 700; }
+
+        /* Custom Primary Color Utilities (Fallback for PJAX transitions) */
+        .bg-primary { background-color: #8b0000 !important; }
+        .hover\:bg-primary-light:hover { background-color: #a52a2a !important; }
+        .text-primary { color: #8b0000 !important; }
+        .focus\:ring-primary:focus { --tw-ring-color: #8b0000 !important; }
+        .focus\:border-primary:focus { border-color: #8b0000 !important; }
+
+        @keyframes tabFadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(6px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .tab-content:not(.hidden) {
+            animation: tabFadeIn 0.25s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+        }
 
     /* PROFILE DROPDOWN */
     .profile-dropdown {
@@ -99,6 +156,31 @@ ua_qms_seed_default_units($conn);
     .profile-dropdown-item.logout i {
         color: #dc2626;
     }
+
+    /* Mobile Responsive Tab Navigation */
+    @media (max-width: 767px) {
+        .tabs-nav {
+            flex-wrap: wrap !important;
+            gap: 8px !important;
+            padding: 12px !important;
+            border-radius: 12px !important;
+            border-bottom: none !important;
+        }
+        .tab-btn {
+            flex: 1 1 calc(50% - 8px) !important;
+            justify-content: center !important;
+            border: 1px solid #e5e7eb !important;
+            border-radius: 8px !important;
+            padding: 10px 8px !important;
+            text-align: center !important;
+        }
+        .tab-btn.active {
+            background-color: #8b0000 !important;
+            color: white !important;
+            border-color: #8b0000 !important;
+            border-bottom: 1px solid #8b0000 !important;
+        }
+    }
     </style>
     <script>
         window.CURRENT_USER_ID = <?php echo json_encode($_SESSION['user_id']); ?>;
@@ -109,7 +191,7 @@ ua_qms_seed_default_units($conn);
 </head>
 <body class="bg-gray-50 font-sans text-gray-800 flex h-screen overflow-hidden">
 
-    <?php include "../../includes/sidebar_qmo.php"; ?>
+    <?php require_once __DIR__ . "/../../includes/sidebar_qmo.php"; ?>
 
     <main class="flex-1 flex flex-col overflow-hidden">
         <!-- Topbar -->
@@ -135,8 +217,12 @@ ua_qms_seed_default_units($conn);
                     </button>
                     <!-- Profile Dropdown -->
                     <div class="relative">
-                        <button id="profile-btn" class="w-10 h-10 rounded-full bg-[#800000] flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition">
-                            <?php echo isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'; ?>
+                        <button id="profile-btn" class="w-10 h-10 rounded-full bg-[#800000] flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition overflow-hidden">
+                            <?php if (!empty($_SESSION['profile_photo'])): ?>
+                                <img src="<?php echo htmlspecialchars($_SESSION['profile_photo']); ?>" class="w-full h-full object-cover rounded-full" alt="Profile" />
+                            <?php else: ?>
+                                <?php echo h(isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'); ?>
+                            <?php endif; ?>
                         </button>
                         <div id="profile-dropdown" class="profile-dropdown">
                             <div class="profile-dropdown-header">
@@ -159,20 +245,24 @@ ua_qms_seed_default_units($conn);
 
 
                 <!-- Tabs Navigation -->
-                <div class="flex flex-nowrap overflow-x-auto border-b border-gray-200 mb-6 bg-white rounded-t-xl px-4" style="scrollbar-width: none;">
-                    <button onclick="switchTab('academic')" class="tab-btn active px-4 md:px-6 py-4 text-sm font-medium transition-all whitespace-nowrap" id="tab-academic"><i class="fas fa-calendar-alt mr-2"></i> Academic Year</button>
+                <div class="tabs-nav flex flex-nowrap overflow-x-auto border-b border-gray-200 mb-6 bg-white rounded-t-xl px-4" style="scrollbar-width: none;">
+                    <button onclick="switchTab('system')" class="tab-btn active px-4 md:px-6 py-4 text-sm font-medium transition-all whitespace-nowrap" id="tab-system"><i class="fas fa-clock mr-2"></i> Deadline</button>
+                    <button onclick="switchTab('announcements')" class="tab-btn px-4 md:px-6 py-4 text-sm font-medium transition-all whitespace-nowrap" id="tab-announcements"><i class="fas fa-bullhorn mr-2"></i> Announcements</button>
+                    <button onclick="switchTab('academic')" class="tab-btn px-4 md:px-6 py-4 text-sm font-medium transition-all whitespace-nowrap" id="tab-academic"><i class="fas fa-calendar-alt mr-2"></i> Academic Year</button>
                     <button onclick="switchTab('documents')" class="tab-btn px-4 md:px-6 py-4 text-sm font-medium transition-all whitespace-nowrap" id="tab-documents"><i class="fas fa-file-alt mr-2"></i> Document Types</button>
                     <button onclick="switchTab('offices')" class="tab-btn px-4 md:px-6 py-4 text-sm font-medium transition-all whitespace-nowrap" id="tab-offices"><i class="fas fa-building mr-2"></i> Office/Department</button>
-                    <button onclick="switchTab('system')" class="tab-btn px-4 md:px-6 py-4 text-sm font-medium transition-all whitespace-nowrap" id="tab-system"><i class="fas fa-cog mr-2"></i> System Config</button>
                 </div>
 
                 <!-- Tab Contents -->
-                <div id="content-academic" class="tab-content space-y-6">
+                <div id="content-academic" class="tab-content hidden space-y-6">
                     <div class="grid grid-cols-1 gap-6">
                         <!-- Academic Year Management -->
                         <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-                            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+                            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 pb-4 border-b border-gray-150">
                                 <h2 class="text-lg font-bold flex items-center gap-2 text-gray-800"><i class="fas fa-calendar-alt text-primary"></i> Academic Year Management</h2>
+                                <button onclick="showAddAYModal()" class="bg-[#800000] hover:bg-red-950 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all duration-200 transform hover:scale-105 active:scale-95 shadow flex items-center gap-2">
+                                    <i class="fas fa-plus"></i> Add Academic Year
+                                </button>
                             </div>
                             <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
                                 <div class="relative w-full sm:w-72">
@@ -181,9 +271,6 @@ ua_qms_seed_default_units($conn);
                                     </span>
                                     <input type="text" id="search-ay" oninput="renderAYs()" placeholder="Search academic years..." class="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary">
                                 </div>
-                                <button onclick="showAddAYModal()" class="w-full sm:w-auto bg-primary text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-primary-light transition shadow-sm flex items-center justify-center gap-2">
-                                    <i class="fas fa-plus"></i> Add Academic Year
-                                </button>
                             </div>
                             <div class="overflow-hidden border rounded-lg">
                                 <table class="w-full text-left text-sm">
@@ -203,8 +290,11 @@ ua_qms_seed_default_units($conn);
 
                 <div id="content-documents" class="tab-content hidden space-y-6">
                     <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 pb-4 border-b border-gray-150">
                             <h2 class="text-lg font-bold flex items-center gap-2 text-gray-800"><i class="fas fa-file-alt text-primary"></i> Document Type Management</h2>
+                            <button onclick="showAddDocModal()" class="bg-[#800000] hover:bg-red-950 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all duration-200 transform hover:scale-105 active:scale-95 shadow flex items-center gap-2">
+                                <i class="fas fa-plus"></i> Add Document Type
+                            </button>
                         </div>
                         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
                             <div class="relative w-full sm:w-72">
@@ -213,9 +303,6 @@ ua_qms_seed_default_units($conn);
                                 </span>
                                 <input type="text" id="search-doc" oninput="renderDocTypes()" placeholder="Search document types..." class="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary">
                             </div>
-                            <button onclick="showAddDocModal()" class="w-full sm:w-auto bg-primary text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-primary-light transition shadow-sm flex items-center justify-center gap-2">
-                                <i class="fas fa-plus"></i> Add Document Type
-                            </button>
                         </div>
                         <div class="overflow-x-auto border rounded-lg">
                             <table class="w-full text-left text-sm">
@@ -236,8 +323,11 @@ ua_qms_seed_default_units($conn);
 
                 <div id="content-offices" class="tab-content hidden space-y-6">
                     <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 pb-4 border-b border-gray-150">
                             <h2 class="text-lg font-bold flex items-center gap-2 text-gray-800"><i class="fas fa-building text-primary"></i> Office/Department Management</h2>
+                            <button onclick="showAddOfficeModal()" class="bg-[#800000] hover:bg-red-950 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all duration-200 transform hover:scale-105 active:scale-95 shadow flex items-center gap-2">
+                                <i class="fas fa-plus"></i> Add Office/Department
+                            </button>
                         </div>
                         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
                             <div class="flex items-center gap-2 w-full sm:w-auto">
@@ -251,9 +341,6 @@ ua_qms_seed_default_units($conn);
                                     <option value="">All Categories</option>
                                 </select>
                             </div>
-                            <button onclick="showAddOfficeModal()" class="w-full sm:w-auto bg-primary text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-primary-light transition shadow-sm flex items-center justify-center gap-2">
-                                <i class="fas fa-plus"></i> Add Office
-                            </button>
                         </div>
                         <div class="overflow-x-auto border rounded-lg">
                             <table class="w-full text-left text-sm">
@@ -272,49 +359,20 @@ ua_qms_seed_default_units($conn);
                     </div>
                 </div>
 
-                <div id="content-system" class="tab-content hidden space-y-6">
-                    <!-- Active Period Settings -->
+                <div id="content-system" class="tab-content space-y-6">
                     <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-                        <h2 class="text-lg font-bold flex items-center gap-2 text-gray-800 mb-2">
-                            <i class="fas fa-sliders-h text-primary"></i> Active Period Configuration
-                        </h2>
-                        <p class="text-xs text-gray-500 mb-6">Set the active Academic Year and Quarter. This setting determines which repository directories uploads are stored in and controls all default system dashboard views and reports.</p>
-                        
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
-                            <div>
-                                <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Active Academic Year</label>
-                                <select id="active-system-ay" class="w-full p-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary outline-none">
-                                    <!-- Populated via javascript -->
-                                </select>
-                            </div>
-                            <div>
-                                <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Active Quarter</label>
-                                <select id="active-system-quarter" class="w-full p-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary outline-none">
-                                    <option value="1st Quarter">1st Quarter</option>
-                                    <option value="2nd Quarter">2nd Quarter</option>
-                                    <option value="3rd Quarter">3rd Quarter</option>
-                                    <option value="4th Quarter">4th Quarter</option>
-                                </select>
-                            </div>
-                            <div>
-                                <button onclick="saveActivePeriod()" class="w-full bg-primary text-white px-4 py-2.5 rounded-lg text-sm font-bold hover:bg-primary-light transition shadow-sm flex items-center justify-center gap-2">
-                                    <i class="fas fa-save"></i> Save Period Configuration
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-                        <div class="flex flex-col lg:flex-row justify-between gap-4 mb-5">
+                        <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-5 pb-4 border-b border-gray-150">
                             <div>
                                 <h2 class="text-lg font-bold flex items-center gap-2 text-gray-800"><i class="fas fa-calendar-check text-primary text-sm"></i> Submission Deadline Management</h2>
                                 <p class="text-xs text-gray-500 mt-1">Set quarterly submission deadlines by academic year and document type.</p>
                             </div>
-                            <div class="flex flex-col sm:flex-row gap-3 w-full lg:w-auto">
-                                <input type="number" id="deadline-year-filter" min="2000" max="2100" oninput="loadSubmissionDeadlines()" placeholder="Year" class="w-full sm:w-32 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary">
-                                <button onclick="showDeadlineModal()" class="w-full sm:w-auto bg-primary text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-primary-light transition shadow-sm flex items-center justify-center gap-2">
-                                    <i class="fas fa-plus"></i> Add Deadline
-                                </button>
+                            <button onclick="showDeadlineModal()" class="bg-[#800000] hover:bg-red-950 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all duration-200 transform hover:scale-105 active:scale-95 shadow flex items-center gap-2">
+                                <i class="fas fa-plus"></i> Add Deadline
+                            </button>
+                        </div>
+                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
+                            <div class="flex items-center gap-2 w-full sm:w-auto">
+                                <input type="text" id="deadline-year-filter" oninput="loadSubmissionDeadlines()" placeholder="Year" class="w-full sm:w-32 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary">
                             </div>
                         </div>
                         <div class="overflow-x-auto border rounded-lg">
@@ -322,7 +380,7 @@ ua_qms_seed_default_units($conn);
                                 <thead class="bg-gray-50 border-b">
                                     <tr>
                                         <th class="p-3">Year</th>
-                                        <th class="p-3">Quarter</th>
+                                        <th class="p-3">Period</th>
                                         <th class="p-3">Document Type</th>
                                         <th class="p-3">Deadline</th>
                                         <th class="p-3">Actions</th>
@@ -332,44 +390,84 @@ ua_qms_seed_default_units($conn);
                             </table>
                         </div>
                     </div>
-                    <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-200 mt-6">
-                        <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
+                </div> <!-- End of content-system -->
+
+                <!-- Announcements Tab Content -->
+                <div id="content-announcements" class="tab-content hidden space-y-6">
+                    <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
+                        <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-6 pb-4 border-b border-gray-150">
                             <div>
                                 <h2 class="text-lg font-bold flex items-center gap-2 text-gray-800"><i class="fas fa-bullhorn text-primary text-sm"></i> Global Announcements</h2>
                                 <p class="text-xs text-gray-500 mt-1">Post announcements that will appear in all unit dashboards.</p>
                             </div>
-                            <button onclick="document.getElementById('announcementModal').classList.remove('hidden')" class="w-full lg:w-auto bg-[#800000] text-white px-4 py-2 rounded-lg font-bold text-sm shadow hover:bg-red-900 transition flex items-center justify-center gap-2">
-                                <i class="fas fa-paper-plane"></i> Post Announcement
+                            <button onclick="openAnnouncementModal()" class="bg-[#800000] hover:bg-red-950 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all duration-200 transform hover:scale-105 active:scale-95 shadow flex items-center gap-2">
+                                <i class="fas fa-plus"></i> Post Announcement
                             </button>
+                        </div>
+                        
+                        <!-- List of announcements -->
+                        <div class="overflow-x-auto border rounded-lg">
+                            <table class="w-full text-left text-sm">
+                                <thead class="bg-gray-50 border-b">
+                                    <tr>
+                                        <th class="p-3">Title</th>
+                                        <th class="p-3">Content</th>
+                                        <th class="p-3">Image</th>
+                                        <th class="p-3">Posted By</th>
+                                        <th class="p-3">Date</th>
+                                        <th class="p-3">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="announcements-list-tbody">
+                                    <tr>
+                                        <td colspan="6" class="p-3 text-center text-gray-500">Loading announcements...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </div>
 
             </div>
         </div>
-    </main>
+
+</main>
 
     <!-- Modals -->
-    <div id="announcementModal" class="fixed inset-0 bg-black/60 hidden flex items-center justify-center z-50 p-4">
+    <!-- Announcement Modal -->
+    <div id="announcementModal" class="fixed inset-0 bg-black/60 hidden flex items-center justify-center z-[9999] p-4">
         <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden">
             <div class="px-6 py-4 bg-[#800000] text-white flex justify-between items-center">
-                <h3 class="font-bold flex items-center gap-2"><i class="fas fa-bullhorn"></i> Post Announcement</h3>
+                <h3 id="announcement-modal-title" class="font-bold flex items-center gap-2"><i class="fas fa-bullhorn"></i> Post Announcement</h3>
                 <button onclick="document.getElementById('announcementModal').classList.add('hidden')" class="text-white hover:text-gray-200 transition">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
-            <form id="announcementForm" class="p-6 space-y-4">
+            <form id="announcementForm" class="p-6 space-y-4" enctype="multipart/form-data">
+                <input type="hidden" name="announcement_id" id="announcement-id">
+                <input type="hidden" name="remove_image" id="remove-image-flag" value="0">
                 <div>
                     <label class="block text-xs font-bold text-gray-600 uppercase mb-2">Title</label>
-                    <input type="text" name="title" required class="w-full border border-gray-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-[#800000] outline-none">
+                    <input type="text" name="title" id="announcement-title" required class="w-full border border-gray-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-[#800000] outline-none">
                 </div>
                 <div>
                     <label class="block text-xs font-bold text-gray-600 uppercase mb-2">Message</label>
-                    <textarea name="content" rows="4" required class="w-full border border-gray-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-[#800000] outline-none resize-none"></textarea>
+                    <textarea name="content" id="announcement-content" rows="4" required class="w-full border border-gray-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-[#800000] outline-none resize-none"></textarea>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 uppercase mb-2">Optional Image</label>
+                    <input type="file" name="announcement_image" id="announcement-image-input" accept="image/*" class="w-full border border-gray-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-[#800000] outline-none">
+                    <div id="announcement-image-preview-container" class="mt-2 hidden">
+                        <p class="text-xs text-gray-500 mb-1">Current Image:</p>
+                        <div class="relative inline-block">
+                            <img id="announcement-image-preview" src="" alt="Preview" class="max-h-24 rounded border">
+                            <button type="button" onclick="removeAnnouncementImage()" class="absolute -top-1.5 -right-1.5 bg-red-600 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs hover:bg-red-800"><i class="fas fa-times"></i></button>
+                        </div>
+                    </div>
                 </div>
                 <div class="flex justify-end gap-3 pt-4">
                     <button type="button" onclick="document.getElementById('announcementModal').classList.add('hidden')" class="px-5 py-2 border border-gray-300 rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50 transition">Cancel</button>
-                    <button type="submit" class="px-5 py-2 bg-[#800000] text-white rounded-lg text-sm font-bold shadow hover:bg-red-900 transition flex items-center gap-2">
+                    <button type="submit" id="announcement-submit-btn" class="px-5 py-2 bg-[#800000] text-white rounded-lg text-sm font-bold shadow hover:bg-red-900 transition flex items-center gap-2">
                         <i class="fas fa-paper-plane"></i> Post Announcement
                     </button>
                 </div>
@@ -378,170 +476,191 @@ ua_qms_seed_default_units($conn);
     </div>
 
     <!-- Modals -->
-    <div id="modal-container" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div id="modal-container" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-[9999] p-4">
         <!-- Add AY Modal -->
-        <div id="modal-add-ay" class="bg-white rounded-xl p-6 w-full max-w-md hidden">
-            <h2 class="text-xl font-bold mb-4">Add Academic Year</h2>
+        <div id="modal-add-ay" class="bg-white rounded-xl p-6 w-full max-w-md hidden overflow-visible shadow-2xl">
+            <div class="px-6 py-4 bg-[#800000] text-white flex justify-between items-center -mx-6 -mt-6 mb-5 rounded-t-xl">
+                <h3 class="font-bold flex items-center gap-2"><i class="fas fa-calendar-alt"></i> Add Academic Year</h3>
+                <button onclick="closeModal()" class="text-white hover:text-gray-200 transition"><i class="fas fa-times"></i></button>
+            </div>
             <div class="space-y-4">
                 <div>
-                    <label class="block text-sm font-bold mb-1">Year</label>
-                    <input type="number" id="new-ay-range" min="2000" max="2100" class="w-full p-2 border rounded outline-none focus:ring-1 focus:ring-primary" placeholder="e.g. 2026">
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Academic Year</label>
+                    <input type="text" id="new-ay-range" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon" placeholder="e.g. 2026-2027">
                 </div>
-                <div class="flex gap-2 pt-2">
-                    <button onclick="closeModal()" class="flex-1 py-2 border rounded font-bold hover:bg-gray-50">Cancel</button>
-                    <button onclick="saveAddAY()" class="flex-1 py-2 bg-primary text-white rounded font-bold hover:bg-primary-light">Save</button>
+                <div class="flex gap-3 pt-2">
+                    <button onclick="closeModal()" class="flex-1 py-2.5 border border-gray-200 text-gray-700 rounded-lg font-bold hover:bg-gray-50 transition">Cancel</button>
+                    <button onclick="saveAddAY()" class="flex-1 py-2.5 bg-[#800000] hover:bg-red-900 text-white rounded-lg font-bold transition">Save</button>
                 </div>
             </div>
         </div>
 
         <!-- Add Doc Type Modal -->
-        <div id="modal-doc" class="bg-white rounded-xl p-6 w-full max-w-md hidden">
-            <h2 class="text-xl font-bold mb-4">Add Document Type</h2>
+        <div id="modal-doc" class="bg-white rounded-xl p-6 w-full max-w-md hidden overflow-visible shadow-2xl">
+            <div class="px-6 py-4 bg-[#800000] text-white flex justify-between items-center -mx-6 -mt-6 mb-5 rounded-t-xl">
+                <h3 class="font-bold flex items-center gap-2"><i class="fas fa-file-alt"></i> Add Document Type</h3>
+                <button onclick="closeModal()" class="text-white hover:text-gray-200 transition"><i class="fas fa-times"></i></button>
+            </div>
             <div class="space-y-4">
                 <div>
-                    <label class="block text-sm font-bold mb-1">Code</label>
-                    <input type="text" id="doc-code" class="w-full p-2 border rounded outline-none focus:ring-1 focus:ring-primary" placeholder="e.g. QOP">
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Code</label>
+                    <input type="text" id="doc-code" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon" placeholder="e.g. QOP">
                 </div>
                 <div>
-                    <label class="block text-sm font-bold mb-1">Description</label>
-                    <input type="text" id="doc-desc" class="w-full p-2 border rounded outline-none focus:ring-1 focus:ring-primary">
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Description</label>
+                    <input type="text" id="doc-desc" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon">
                 </div>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-bold mb-1">Required</label>
-                        <select id="doc-req" class="w-full p-2 border rounded">
+                        <label class="block text-sm font-bold mb-1 text-gray-700">Required</label>
+                        <select id="doc-req" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon">
                             <option value="Yes">Yes</option>
                             <option value="No">No</option>
                         </select>
                     </div>
                     <div>
-                        <label class="block text-sm font-bold mb-1">Frequency</label>
-                        <select id="doc-freq" class="w-full p-2 border rounded">
+                        <label class="block text-sm font-bold mb-1 text-gray-700">Frequency</label>
+                        <select id="doc-freq" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon">
                             <option value="Quarterly">Quarterly</option>
                             <option value="Optional">Optional</option>
                             <option value="Once">Once</option>
                         </select>
                     </div>
                 </div>
-                <div class="flex gap-2 pt-2">
-                    <button onclick="closeModal()" class="flex-1 py-2 border rounded font-bold hover:bg-gray-50">Cancel</button>
-                    <button onclick="saveDocType()" class="flex-1 py-2 bg-primary text-white rounded font-bold hover:bg-primary-light">Save</button>
+                <div class="flex gap-3 pt-2">
+                    <button onclick="closeModal()" class="flex-1 py-2.5 border border-gray-200 text-gray-700 rounded-lg font-bold hover:bg-gray-50 transition">Cancel</button>
+                    <button onclick="saveDocType()" class="flex-1 py-2.5 bg-[#800000] hover:bg-red-900 text-white rounded-lg font-bold transition">Save</button>
                 </div>
             </div>
         </div>
 
         <!-- Edit Doc Type Modal -->
-        <div id="modal-edit-doc" class="bg-white rounded-xl p-6 w-full max-w-md hidden">
-            <h2 class="text-xl font-bold mb-4">Edit Document Type</h2>
+        <div id="modal-edit-doc" class="bg-white rounded-xl p-6 w-full max-w-md hidden overflow-visible shadow-2xl">
+            <div class="px-6 py-4 bg-[#800000] text-white flex justify-between items-center -mx-6 -mt-6 mb-5 rounded-t-xl">
+                <h3 class="font-bold flex items-center gap-2"><i class="fas fa-file-alt"></i> Edit Document Type</h3>
+                <button onclick="closeModal()" class="text-white hover:text-gray-200 transition"><i class="fas fa-times"></i></button>
+            </div>
             <div class="space-y-4">
                 <input type="hidden" id="edit-doc-id">
                 <div>
-                    <label class="block text-sm font-bold mb-1">Code</label>
-                    <input type="text" id="edit-doc-code" class="w-full p-2 border rounded outline-none focus:ring-1 focus:ring-primary" placeholder="e.g. QOP">
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Code</label>
+                    <input type="text" id="edit-doc-code" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon" placeholder="e.g. QOP">
                 </div>
                 <div>
-                    <label class="block text-sm font-bold mb-1">Description</label>
-                    <input type="text" id="edit-doc-desc" class="w-full p-2 border rounded outline-none focus:ring-1 focus:ring-primary">
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Description</label>
+                    <input type="text" id="edit-doc-desc" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon">
                 </div>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-bold mb-1">Required</label>
-                        <select id="edit-doc-req" class="w-full p-2 border rounded">
+                        <label class="block text-sm font-bold mb-1 text-gray-700">Required</label>
+                        <select id="edit-doc-req" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon">
                             <option value="Yes">Yes</option>
                             <option value="No">No</option>
                         </select>
                     </div>
                     <div>
-                        <label class="block text-sm font-bold mb-1">Frequency</label>
-                        <select id="edit-doc-freq" class="w-full p-2 border rounded">
+                        <label class="block text-sm font-bold mb-1 text-gray-700">Frequency</label>
+                        <select id="edit-doc-freq" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon">
                             <option value="Quarterly">Quarterly</option>
                             <option value="Optional">Optional</option>
                             <option value="Once">Once</option>
                         </select>
                     </div>
                 </div>
-                <div class="flex gap-2 pt-2">
-                    <button onclick="closeModal()" class="flex-1 py-2 border rounded font-bold hover:bg-gray-50">Cancel</button>
-                    <button onclick="saveEditDocType()" class="flex-1 py-2 bg-primary text-white rounded font-bold hover:bg-primary-light">Save Changes</button>
+                <div class="flex gap-3 pt-2">
+                    <button onclick="closeModal()" class="flex-1 py-2.5 border border-gray-200 text-gray-700 rounded-lg font-bold hover:bg-gray-50 transition">Cancel</button>
+                    <button onclick="saveEditDocType()" class="flex-1 py-2.5 bg-[#800000] hover:bg-red-900 text-white rounded-lg font-bold transition">Save Changes</button>
                 </div>
             </div>
         </div>
 
         <!-- Add Office Modal -->
-        <div id="modal-office" class="bg-white rounded-xl p-6 w-full max-w-md hidden">
-            <h2 class="text-xl font-bold mb-4">Add Office/Department</h2>
+        <div id="modal-office" class="bg-white rounded-xl p-6 w-full max-w-md hidden overflow-visible shadow-2xl">
+            <div class="px-6 py-4 bg-[#800000] text-white flex justify-between items-center -mx-6 -mt-6 mb-5 rounded-t-xl">
+                <h3 class="font-bold flex items-center gap-2"><i class="fas fa-building"></i> Add Office/Department</h3>
+                <button onclick="closeModal()" class="text-white hover:text-gray-200 transition"><i class="fas fa-times"></i></button>
+            </div>
             <div class="space-y-4">
                 <div>
-                    <label class="block text-sm font-bold mb-1">Office Name</label>
-                    <input type="text" id="off-name" class="w-full p-2 border rounded outline-none focus:ring-1 focus:ring-primary" placeholder="e.g. College of Engineering">
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Office Name</label>
+                    <input type="text" id="off-name" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon" placeholder="e.g. College of Engineering">
                 </div>
                 <div>
-                    <label class="block text-sm font-bold mb-1">Code</label>
-                    <input type="text" id="off-code" class="w-full p-2 border rounded outline-none focus:ring-1 focus:ring-primary" placeholder="e.g. CE">
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Code</label>
+                    <input type="text" id="off-code" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon" placeholder="e.g. CE">
                 </div>
                 <div>
-                    <label class="block text-sm font-bold mb-1">Category</label>
-                    <select id="off-cat" class="w-full p-2 border rounded"></select>
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Category</label>
+                    <select id="off-cat" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon"></select>
                 </div>
-                <div class="flex gap-2 pt-2">
-                    <button onclick="closeModal()" class="flex-1 py-2 border rounded font-bold hover:bg-gray-50">Cancel</button>
-                    <button onclick="saveOffice()" class="flex-1 py-2 bg-primary text-white rounded font-bold hover:bg-primary-light">Save</button>
+                <div class="flex gap-3 pt-2">
+                    <button onclick="closeModal()" class="flex-1 py-2.5 border border-gray-200 text-gray-700 rounded-lg font-bold hover:bg-gray-50 transition">Cancel</button>
+                    <button onclick="saveOffice()" class="flex-1 py-2.5 bg-[#800000] hover:bg-red-900 text-white rounded-lg font-bold transition">Save</button>
                 </div>
             </div>
         </div>
 
         <!-- Edit AY Modal -->
-        <div id="modal-edit-ay" class="bg-white rounded-xl p-6 w-full max-w-md hidden">
-            <h2 class="text-xl font-bold mb-4">Edit Academic Year</h2>
+        <div id="modal-edit-ay" class="bg-white rounded-xl p-6 w-full max-w-md hidden overflow-visible shadow-2xl">
+            <div class="px-6 py-4 bg-[#800000] text-white flex justify-between items-center -mx-6 -mt-6 mb-5 rounded-t-xl">
+                <h3 class="font-bold flex items-center gap-2"><i class="fas fa-calendar-alt"></i> Edit Academic Year</h3>
+                <button onclick="closeModal()" class="text-white hover:text-gray-200 transition"><i class="fas fa-times"></i></button>
+            </div>
             <div class="space-y-4">
                 <input type="hidden" id="edit-ay-id">
                 <div>
-                    <label class="block text-sm font-bold mb-1">Year</label>
-                    <input type="number" id="edit-ay-range" min="2000" max="2100" class="w-full p-2 border rounded outline-none focus:ring-1 focus:ring-primary" placeholder="e.g. 2026">
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Academic Year</label>
+                    <input type="text" id="edit-ay-range" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon" placeholder="e.g. 2026-2027">
                 </div>
-                <div class="flex gap-2 pt-2">
-                    <button onclick="closeModal()" class="flex-1 py-2 border rounded font-bold hover:bg-gray-50">Cancel</button>
-                    <button onclick="saveEditAY()" class="flex-1 py-2 bg-primary text-white rounded font-bold hover:bg-primary-light">Save Changes</button>
+                <div class="flex gap-3 pt-2">
+                    <button onclick="closeModal()" class="flex-1 py-2.5 border border-gray-200 text-gray-700 rounded-lg font-bold hover:bg-gray-50 transition">Cancel</button>
+                    <button onclick="saveEditAY()" class="flex-1 py-2.5 bg-[#800000] hover:bg-red-900 text-white rounded-lg font-bold transition">Save Changes</button>
                 </div>
             </div>
         </div>
 
         <!-- Edit Office Modal -->
-        <div id="modal-edit-office" class="bg-white rounded-xl p-6 w-full max-w-md hidden">
-            <h2 class="text-xl font-bold mb-4">Edit Office/Department</h2>
+        <div id="modal-edit-office" class="bg-white rounded-xl p-6 w-full max-w-md hidden overflow-visible shadow-2xl">
+            <div class="px-6 py-4 bg-[#800000] text-white flex justify-between items-center -mx-6 -mt-6 mb-5 rounded-t-xl">
+                <h3 class="font-bold flex items-center gap-2"><i class="fas fa-building"></i> Edit Office/Department</h3>
+                <button onclick="closeModal()" class="text-white hover:text-gray-200 transition"><i class="fas fa-times"></i></button>
+            </div>
             <div class="space-y-4">
                 <input type="hidden" id="edit-off-id">
                 <div>
-                    <label class="block text-sm font-bold mb-1">Office Name</label>
-                    <input type="text" id="edit-off-name" class="w-full p-2 border rounded outline-none focus:ring-1 focus:ring-primary" placeholder="e.g. College of Engineering">
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Office Name</label>
+                    <input type="text" id="edit-off-name" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon" placeholder="e.g. College of Engineering">
                 </div>
                 <div>
-                    <label class="block text-sm font-bold mb-1">Code</label>
-                    <input type="text" id="edit-off-code" class="w-full p-2 border rounded outline-none focus:ring-1 focus:ring-primary" placeholder="e.g. CE">
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Code</label>
+                    <input type="text" id="edit-off-code" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon" placeholder="e.g. CE">
                 </div>
                 <div>
-                    <label class="block text-sm font-bold mb-1">Category</label>
-                    <select id="edit-off-cat" class="w-full p-2 border rounded"></select>
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Category</label>
+                    <select id="edit-off-cat" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon"></select>
                 </div>
-                <div class="flex gap-2 pt-2">
-                    <button onclick="closeModal()" class="flex-1 py-2 border rounded font-bold hover:bg-gray-50">Cancel</button>
-                    <button onclick="saveEditOffice()" class="flex-1 py-2 bg-primary text-white rounded font-bold hover:bg-primary-light">Save Changes</button>
+                <div class="flex gap-3 pt-2">
+                    <button onclick="closeModal()" class="flex-1 py-2.5 border border-gray-200 text-gray-700 rounded-lg font-bold hover:bg-gray-50 transition">Cancel</button>
+                    <button onclick="saveEditOffice()" class="flex-1 py-2.5 bg-[#800000] hover:bg-red-900 text-white rounded-lg font-bold transition">Save Changes</button>
                 </div>
             </div>
         </div>
 
         <!-- Add/Edit Submission Deadline Modal -->
-        <div id="modal-deadline" class="bg-white rounded-xl p-6 w-full max-w-md hidden">
-            <h2 id="deadline-modal-title" class="text-xl font-bold mb-4">Add Submission Deadline</h2>
+        <div id="modal-deadline" class="bg-white rounded-xl p-6 w-full max-w-md hidden overflow-visible shadow-2xl">
+            <div class="px-6 py-4 bg-[#800000] text-white flex justify-between items-center -mx-6 -mt-6 mb-5 rounded-t-xl">
+                <h3 id="deadline-modal-title" class="font-bold flex items-center gap-2"><i class="fas fa-clock"></i> Add Submission Deadline</h3>
+                <button onclick="closeModal()" class="text-white hover:text-gray-200 transition"><i class="fas fa-times"></i></button>
+            </div>
             <div class="space-y-4">
                 <input type="hidden" id="deadline-id">
                 <div>
-                    <label class="block text-sm font-bold mb-1">Academic Year</label>
-                    <input type="number" id="deadline-year" min="2000" max="2100" class="w-full p-2 border rounded outline-none focus:ring-1 focus:ring-primary" placeholder="e.g. 2026">
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Academic Year</label>
+                    <input type="text" id="deadline-year" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none bg-gray-50 text-gray-500 cursor-not-allowed" readonly placeholder="Academic Year">
                 </div>
                 <div>
-                    <label class="block text-sm font-bold mb-1">Quarter</label>
-                    <select id="deadline-quarter" class="w-full p-2 border rounded">
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Period</label>
+                    <select id="deadline-quarter" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon">
                         <option value="1st Quarter">1st Quarter</option>
                         <option value="2nd Quarter">2nd Quarter</option>
                         <option value="3rd Quarter">3rd Quarter</option>
@@ -549,22 +668,24 @@ ua_qms_seed_default_units($conn);
                     </select>
                 </div>
                 <div>
-                    <label class="block text-sm font-bold mb-1">Document Type</label>
-                    <select id="deadline-doc-type" class="w-full p-2 border rounded"></select>
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Document Type</label>
+                    <select id="deadline-doc-type" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon"></select>
                 </div>
                 <div>
-                    <label class="block text-sm font-bold mb-1">Deadline</label>
-                    <input type="date" id="deadline-date" class="w-full p-2 border rounded outline-none focus:ring-1 focus:ring-primary">
+                    <label class="block text-sm font-bold mb-1 text-gray-700">Deadline</label>
+                    <input type="date" id="deadline-date" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon">
                 </div>
-                <div class="flex gap-2 pt-2">
-                    <button onclick="closeModal()" class="flex-1 py-2 border rounded font-bold hover:bg-gray-50">Cancel</button>
-                    <button onclick="saveDeadline()" class="flex-1 py-2 bg-primary text-white rounded font-bold hover:bg-primary-light">Save</button>
+                <div class="flex gap-3 pt-2">
+                    <button onclick="closeModal()" class="flex-1 py-2.5 border border-gray-200 text-gray-700 rounded-lg font-bold hover:bg-gray-50 transition">Cancel</button>
+                    <button onclick="saveDeadline()" class="flex-1 py-2.5 bg-[#800000] hover:bg-red-900 text-white rounded-lg font-bold transition">Save</button>
                 </div>
             </div>
         </div>
     </div>
 
     <script>
+
+
         // Tab Management
         function switchTab(tab) {
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
@@ -578,13 +699,12 @@ ua_qms_seed_default_units($conn);
             if (tab === 'academic') { loadAYs(); }
             if (tab === 'documents') loadDocTypes();
             if (tab === 'offices') loadOffices();
-            if (tab === 'system') {
-                loadSystemConfig();
-            }
+            if (tab === 'system') loadSystemConfig();
+            if (tab === 'announcements') loadAnnouncements();
         }
 
         // Academic Years
-        let allAYs = [];
+        var allAYs = allAYs || [];
         async function loadAYs() {
             const res = await fetch('../../api/settings_api.php?action=get_academic_years');
             const data = await res.json();
@@ -604,11 +724,11 @@ ua_qms_seed_default_units($conn);
                 <tr class="border-b hover:bg-gray-50/50 transition-colors">
                     <td class="p-3 font-semibold text-gray-700">${ay.year_range}</td>
                     <td class="p-3">
-                        ${ay.is_active ? '<span class="bg-emerald-100 text-emerald-800 px-2.5 py-0.5 rounded-full text-xs font-bold shadow-sm">Active</span>' : '<span class="bg-gray-100 text-gray-600 px-2.5 py-0.5 rounded-full text-xs font-bold">Inactive</span>'}
+                        ${Number(ay.is_active) === 1 ? '<span class="bg-emerald-100 text-emerald-800 px-2.5 py-0.5 rounded-full text-xs font-bold shadow-sm">Active</span>' : '<span class="bg-gray-100 text-gray-600 px-2.5 py-0.5 rounded-full text-xs font-bold">Inactive</span>'}
                     </td>
                     <td class="p-3">
                         <div class="flex items-center gap-2">
-                            ${!ay.is_active ? `
+                            ${Number(ay.is_active) !== 1 ? `
                             <button onclick="setActiveAY(${ay.ay_id})" class="bg-red-50 text-[#800000] hover:bg-[#800000] hover:text-white px-2.5 py-1 rounded-lg text-xs font-bold inline-flex items-center gap-1 transition shadow-sm border border-red-200">
                                 <i class="fas fa-check text-[10px]"></i> Set Active
                             </button>` : ''}
@@ -633,8 +753,8 @@ ua_qms_seed_default_units($conn);
 
         async function saveAddAY() {
             const range = document.getElementById('new-ay-range').value;
-            if (!/^\d{4}$/.test(range)) {
-                alert('Academic year must be a 4-digit year, e.g. 2026.');
+            if (!/^\d{4}-\d{4}$/.test(range)) {
+                alert('Academic year must be a valid range, e.g. 2026-2027.');
                 return;
             }
             const res = await fetch('../../api/settings_api.php?action=add_academic_year', {
@@ -651,11 +771,22 @@ ua_qms_seed_default_units($conn);
         }
 
         async function setActiveAY(id) {
-            await fetch('../../api/settings_api.php?action=set_active_year', {
-                method: 'POST',
-                body: JSON.stringify({ ay_id: id })
-            });
-            loadAYs();
+            try {
+                const res = await fetch('../../api/settings_api.php?action=set_active_year', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ay_id: id })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    loadAYs();
+                    loadSystemConfig();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (err) {
+                alert('An error occurred while setting active year.');
+            }
         }
 
         function editAY(id, range) {
@@ -670,39 +801,50 @@ ua_qms_seed_default_units($conn);
         async function saveEditAY() {
             const id = document.getElementById('edit-ay-id').value;
             const range = document.getElementById('edit-ay-range').value;
-            if (!/^\d{4}$/.test(range)) {
-                alert('Academic year must be a 4-digit year, e.g. 2026.');
+            if (!/^\d{4}-\d{4}$/.test(range)) {
+                alert('Academic year must be a valid range, e.g. 2026-2027.');
                 return;
             }
-            const res = await fetch('../../api/settings_api.php?action=edit_academic_year', {
-                method: 'POST',
-                body: JSON.stringify({ ay_id: id, year_range: range })
-            });
-            const data = await res.json();
-            if (data.success) {
-                closeModal();
-                loadAYs();
-            } else {
-                alert('Error: ' + data.error);
+            try {
+                const res = await fetch('../../api/settings_api.php?action=edit_academic_year', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ay_id: id, year_range: range })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    closeModal();
+                    loadAYs();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (err) {
+                alert('An error occurred while saving.');
             }
         }
 
         async function deleteAY(id) {
-            if (!confirm('Are you sure you want to delete this Academic Year?')) return;
-            const res = await fetch('../../api/settings_api.php?action=delete_academic_year', {
-                method: 'POST',
-                body: JSON.stringify({ ay_id: id })
+            showThemeConfirm('Are you sure you want to delete this Academic Year?', async () => {
+                try {
+                    const res = await fetch('../../api/settings_api.php?action=delete_academic_year', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ay_id: id })
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                        loadAYs();
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
+                } catch (err) {
+                    alert('An error occurred while deleting.');
+                }
             });
-            const data = await res.json();
-            if (data.success) {
-                loadAYs();
-            } else {
-                alert('Error: ' + data.error);
-            }
         }
 
         // Document Types
-        let allDocTypes = [];
+        var allDocTypes = allDocTypes || [];
         async function loadDocTypes() {
             const res = await fetch('../../api/settings_api.php?action=get_document_types');
             const data = await res.json();
@@ -809,16 +951,27 @@ ua_qms_seed_default_units($conn);
         }
 
         async function deleteDocType(id) {
-            if (!confirm('Are you sure? This may affect existing submissions.')) return;
-            await fetch('../../api/settings_api.php?action=delete_document_type', {
-                method: 'POST',
-                body: JSON.stringify({ doc_type_id: id })
+            showThemeConfirm('Are you sure? This may affect existing submissions.', async () => {
+                try {
+                    const res = await fetch('../../api/settings_api.php?action=delete_document_type', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ doc_type_id: id })
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                        loadDocTypes();
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
+                } catch (err) {
+                    alert('An error occurred while deleting.');
+                }
             });
-            loadDocTypes();
         }
 
         // Offices
-        let allOffices = [];
+        var allOffices = allOffices || [];
         async function loadOffices() {
             const catSelect = document.getElementById('filter-office-cat');
             if (catSelect && catSelect.children.length === 1) {
@@ -943,22 +1096,28 @@ ua_qms_seed_default_units($conn);
         }
 
         async function deleteOffice(id) {
-            if (!confirm('Are you sure you want to delete this office? This will delete all documents and user links associated with it.')) return;
-            const res = await fetch('../../api/settings_api.php?action=delete_office', {
-                method: 'POST',
-                body: JSON.stringify({ office_id: id })
+            showThemeConfirm('Are you sure you want to delete this office? This will delete all documents and user links associated with it.', async () => {
+                try {
+                    const res = await fetch('../../api/settings_api.php?action=delete_office', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ office_id: id })
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                        loadOffices();
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
+                } catch (err) {
+                    alert('An error occurred while deleting.');
+                }
             });
-            const data = await res.json();
-            if (data.success) {
-                loadOffices();
-            } else {
-                alert('Error: ' + data.error);
-            }
         }
 
         // Submission Deadline
-        let allDeadlines = [];
-        const quarters = ['1st Quarter', '2nd Quarter', '3rd Quarter', '4th Quarter'];
+        var allDeadlines = allDeadlines || [];
+        var quarters = quarters || ['1st Quarter', '2nd Quarter', '3rd Quarter', '4th Quarter'];
 
         function escapeHtml(value) {
             return String(value ?? '').replace(/[&<>"']/g, function(char) {
@@ -974,29 +1133,58 @@ ua_qms_seed_default_units($conn);
         }
 
         async function loadSystemConfig() {
-            // 1. Fetch available AYs for active AY dropdown
-            const ayRes = await fetch('../../api/settings_api.php?action=get_academic_years');
-            const ayData = await ayRes.json();
-            const aySelect = document.getElementById('active-system-ay');
-            if (aySelect && ayData.success) {
-                aySelect.innerHTML = (ayData.data || []).map(ay => `<option value="${ay.year_range}">${ay.year_range}</option>`).join('');
-            }
-
-            // 2. Fetch current settings from DB
-            const settingsRes = await fetch('../../api/settings_api.php?action=get_system_settings');
-            const settingsData = await settingsRes.json();
-            if (settingsData.success) {
-                const s = settingsData.data;
-                if (document.getElementById('active-system-ay')) {
-                    document.getElementById('active-system-ay').value = s.active_academic_year || '';
+            try {
+                console.log("loadSystemConfig invoked");
+                // 1. Fetch available AYs for active AY dropdown
+                const ayRes = await fetch('../../api/settings_api.php?action=get_academic_years');
+                console.log("get_academic_years HTTP status:", ayRes.status);
+                const ayData = await ayRes.json();
+                console.log("get_academic_years JSON success:", ayData.success, "Data:", ayData.data);
+                
+                const aySelect = document.getElementById('active-system-ay');
+                if (aySelect && ayData.success) {
+                    aySelect.innerHTML = (ayData.data || []).map(ay => `<option value="${ay.year_range}">${ay.year_range}</option>`).join('');
+                    console.log("aySelect innerHTML updated, options count:", aySelect.options.length);
+                    if (typeof aySelect.rebuildCustomOptions === 'function') {
+                        console.log("Calling aySelect.rebuildCustomOptions()");
+                        aySelect.rebuildCustomOptions();
+                    } else {
+                        console.log("Warning: aySelect.rebuildCustomOptions is not a function!");
+                    }
                 }
-                if (document.getElementById('active-system-quarter')) {
-                    document.getElementById('active-system-quarter').value = s.active_semester || '1st Quarter';
-                }
-            }
 
-            // 3. Load submission deadlines
-            loadSubmissionDeadlines();
+                // 2. Fetch current settings from DB
+                const settingsRes = await fetch('../../api/settings_api.php?action=get_system_settings');
+                console.log("get_system_settings HTTP status:", settingsRes.status);
+                const settingsData = await settingsRes.json();
+                console.log("get_system_settings JSON success:", settingsData.success, "Data:", settingsData.data);
+                
+                if (settingsData.success) {
+                    window.systemSettings = settingsData.data;
+                    const s = settingsData.data;
+                    const activeAySelect = document.getElementById('active-system-ay');
+                    if (activeAySelect) {
+                        activeAySelect.value = s.active_academic_year || '';
+                        console.log("Setting activeAySelect.value to:", s.active_academic_year);
+                        if (typeof activeAySelect.rebuildCustomOptions === 'function') {
+                            activeAySelect.rebuildCustomOptions();
+                        }
+                    }
+                    const activeQuarterSelect = document.getElementById('active-system-quarter');
+                    if (activeQuarterSelect) {
+                        activeQuarterSelect.value = s.active_semester || '1st Quarter';
+                        console.log("Setting activeQuarterSelect.value to:", s.active_semester);
+                        if (typeof activeQuarterSelect.rebuildCustomOptions === 'function') {
+                            activeQuarterSelect.rebuildCustomOptions();
+                        }
+                    }
+                }
+
+                // 3. Load submission deadlines
+                loadSubmissionDeadlines(true);
+            } catch (error) {
+                console.error("loadSystemConfig error caught:", error);
+            }
         }
 
         async function saveActivePeriod() {
@@ -1016,11 +1204,11 @@ ua_qms_seed_default_units($conn);
             }
         }
 
-        async function loadSubmissionDeadlines() {
+        async function loadSubmissionDeadlines(forceActiveYear = false) {
             const yearInput = document.getElementById('deadline-year-filter');
-            if (yearInput && !yearInput.value) {
+            if (yearInput && (forceActiveYear || !yearInput.value)) {
                 // Default to active year setting
-                const activeAy = document.getElementById('active-system-ay')?.value || new Date().getFullYear();
+                const activeAy = window.systemSettings?.active_academic_year || new Date().getFullYear();
                 yearInput.value = activeAy;
             }
             const year = yearInput?.value || '';
@@ -1062,24 +1250,30 @@ ua_qms_seed_default_units($conn);
             `).join('');
         }
 
-        async function populateDeadlineDocTypes(selectedId = '') {
+        async function populateDeadlineDocTypes(selectedId = '', isEdit = false) {
             await ensureDocTypesLoaded();
             const select = document.getElementById('deadline-doc-type');
-            select.innerHTML = allDocTypes.map(type => `
+            let optionsHtml = '';
+            if (!isEdit) {
+                optionsHtml += `<option value="all">All Document Types</option>`;
+            }
+            optionsHtml += allDocTypes.map(type => `
                 <option value="${type.doc_type_id}" ${String(type.doc_type_id) === String(selectedId) ? 'selected' : ''}>
                     ${escapeHtml(type.doc_code)} - ${escapeHtml(type.description)}
                 </option>
             `).join('');
+            select.innerHTML = optionsHtml;
         }
 
         async function showDeadlineModal(targetId = null) {
             const item = targetId ? allDeadlines.find(deadline => Number(deadline.target_id) === Number(targetId)) : null;
             document.getElementById('deadline-modal-title').textContent = item ? 'Edit Submission Deadline' : 'Add Submission Deadline';
             document.getElementById('deadline-id').value = item?.target_id || '';
-            document.getElementById('deadline-year').value = item?.year || document.getElementById('deadline-year-filter')?.value || new Date().getFullYear();
+            let activeAY = window.systemSettings?.active_academic_year || '';
+            document.getElementById('deadline-year').value = item?.year || activeAY || String(new Date().getFullYear());
             document.getElementById('deadline-quarter').value = item?.quarter || '1st Quarter';
             document.getElementById('deadline-date').value = item?.deadline || '';
-            await populateDeadlineDocTypes(item?.doc_type_id || '');
+            await populateDeadlineDocTypes(item?.doc_type_id || '', !!item);
 
             document.getElementById('modal-container').classList.remove('hidden');
             document.getElementById('modal-container').classList.add('flex');
@@ -1096,8 +1290,8 @@ ua_qms_seed_default_units($conn);
                 deadline: document.getElementById('deadline-date').value
             };
 
-            if (!/^\d{4}$/.test(payload.year)) {
-                alert('Academic year must be a 4-digit year, e.g. 2026.');
+            if (!/^\d{4}(-\d{4})?$/.test(payload.year)) {
+                alert('Academic year must be a valid 4-digit year or range, e.g. 2026-2027.');
                 return;
             }
 
@@ -1117,17 +1311,23 @@ ua_qms_seed_default_units($conn);
         }
 
         async function deleteDeadline(targetId) {
-            if (!confirm('Remove this submission deadline?')) return;
-            const res = await fetch('../../api/settings_api.php?action=delete_submission_deadline', {
-                method: 'POST',
-                body: JSON.stringify({ target_id: targetId })
+            showThemeConfirm('Remove this submission deadline?', async () => {
+                try {
+                    const res = await fetch('../../api/settings_api.php?action=delete_submission_deadline', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ target_id: targetId })
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                        loadSubmissionDeadlines();
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
+                } catch (err) {
+                    alert('An error occurred while deleting.');
+                }
             });
-            const data = await res.json();
-            if (data.success) {
-                loadSubmissionDeadlines();
-            } else {
-                alert('Error: ' + data.error);
-            }
         }
 
         // Modal Helpers
@@ -1165,58 +1365,217 @@ ua_qms_seed_default_units($conn);
             document.getElementById('modal-deadline').classList.add('hidden');
         }
 
-        // Init
-        loadAYs();
-    </script>
+        // Announcements Configuration
+        var announcementsList = [];
 
-    <script>
-        // Profile Dropdown Toggle
-        const profileBtn = document.getElementById('profile-btn');
-        const profileDropdown = document.getElementById('profile-dropdown');
-        
-        if (profileBtn && profileDropdown) {
-            profileBtn.addEventListener('click', function() {
-                profileDropdown.classList.toggle('active');
-            });
+        async function loadAnnouncements() {
+            try {
+                const res = await fetch('../../api/announcements_api.php?action=get_announcements&t=' + new Date().getTime(), {
+                    credentials: 'same-origin'
+                });
+                const data = await res.json();
+                const tbody = document.getElementById('announcements-list-tbody');
+                if (data.success) {
+                    announcementsList = data.announcements || [];
+                    if (announcementsList.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="6" class="p-3 text-center text-gray-500">No announcements posted yet.</td></tr>';
+                        return;
+                    }
+                    tbody.innerHTML = announcementsList.map(ann => {
+                        const dateObj = new Date(ann.created_at);
+                        const formattedDate = dateObj.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                        
+                        const imgHtml = ann.image_path 
+                            ? `<img src="../../${ann.image_path}" class="h-10 w-auto rounded border object-cover cursor-pointer hover:opacity-80 mx-auto" onclick="window.open('../../${ann.image_path}', '_blank')">`
+                            : '<span class="text-xs text-gray-400 font-medium">None</span>';
+                            
+                        const contentSnippet = ann.content.length > 80 
+                            ? escapeHtml(ann.content.substring(0, 80)) + '...' 
+                            : escapeHtml(ann.content);
+
+                        return `
+                            <tr class="border-b hover:bg-gray-50 transition-colors">
+                                <td class="p-3 font-semibold text-gray-800">${escapeHtml(ann.title)}</td>
+                                <td class="p-3 text-xs text-gray-600 max-w-xs truncate" title="${escapeHtml(ann.content)}">${contentSnippet}</td>
+                                <td class="p-3 text-center">${imgHtml}</td>
+                                <td class="p-3 text-xs text-gray-500 font-medium">${escapeHtml(ann.author_name || 'Admin')}</td>
+                                <td class="p-3 text-xs text-gray-500">${formattedDate}</td>
+                                <td class="p-3">
+                                    <div class="inline-flex items-center gap-2">
+                                        <button onclick="openAnnouncementModal('${ann.id}')" class="inline-flex items-center gap-1 bg-red-50 text-[#800000] border border-red-200 hover:bg-[#800000] hover:text-white px-2 py-1 rounded text-xs font-bold transition shadow-sm">
+                                            <i class="fas fa-edit"></i> Edit
+                                        </button>
+                                        <button onclick="deleteAnnouncement('${ann.id}')" class="inline-flex items-center gap-1 bg-red-50 text-[#800000] border border-red-200 hover:bg-[#800000] hover:text-white px-2 py-1 rounded text-xs font-bold transition shadow-sm">
+                                            <i class="fas fa-trash-alt"></i> Delete
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        `;
+                    }).join('');
+                } else {
+                    tbody.innerHTML = `<tr><td colspan="6" class="p-3 text-center text-red-500">Error loading announcements: ${data.message}</td></tr>`;
+                }
+            } catch (err) {
+                document.getElementById('announcements-list-tbody').innerHTML = `<tr><td colspan="6" class="p-3 text-center text-red-500">Failed to connect to API</td></tr>`;
+            }
+        }
+
+        function openAnnouncementModal(announcementId = null) {
+            const form = document.getElementById('announcementForm');
+            form.reset();
+            document.getElementById('announcement-image-input').value = '';
+            document.getElementById('remove-image-flag').value = '0';
+            document.getElementById('announcement-image-preview-container').classList.add('hidden');
             
-            // Close dropdown when clicking outside
-            document.addEventListener('click', function(event) {
-                if (!event.target.closest('#profile-btn') && !event.target.closest('#profile-dropdown')) {
-                    profileDropdown.classList.remove('active');
+            if (announcementId) {
+                const ann = announcementsList.find(a => Number(a.id) === Number(announcementId));
+                if (ann) {
+                    document.getElementById('announcement-modal-title').innerHTML = '<i class="fas fa-edit"></i> Edit Announcement';
+                    document.getElementById('announcement-id').value = ann.id;
+                    document.getElementById('announcement-title').value = ann.title;
+                    document.getElementById('announcement-content').value = ann.content;
+                    
+                    if (ann.image_path) {
+                        document.getElementById('announcement-image-preview').src = '../../' + ann.image_path;
+                        document.getElementById('announcement-image-preview-container').classList.remove('hidden');
+                    }
+                    document.getElementById('announcement-submit-btn').innerHTML = '<i class="fas fa-save"></i> Save Changes';
+                }
+            } else {
+                document.getElementById('announcement-modal-title').innerHTML = '<i class="fas fa-bullhorn"></i> Post Announcement';
+                document.getElementById('announcement-id').value = '';
+                document.getElementById('announcement-submit-btn').innerHTML = '<i class="fas fa-paper-plane"></i> Post Announcement';
+            }
+            document.getElementById('announcementModal').classList.remove('hidden');
+        }
+
+        function removeAnnouncementImage() {
+            document.getElementById('remove-image-flag').value = '1';
+            document.getElementById('announcement-image-preview-container').classList.add('hidden');
+        }
+
+        async function deleteAnnouncement(announcementId) {
+            showThemeConfirm('Are you sure you want to delete this announcement?', async () => {
+                try {
+                    const res = await fetch('../../api/announcements_api.php?action=delete_announcement', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ id: announcementId }),
+                        credentials: 'same-origin'
+                    });
+                    const data = await res.json();
+                    alert(data.message);
+                    if (data.success) {
+                        loadAnnouncements();
+                    }
+                } catch (err) {
+                    alert('Failed to delete announcement.');
                 }
             });
         }
-    </script>
-    <script>
+
+        // Expose functions to global scope for inline HTML handlers (vital for PJAX execution)
+        window.switchTab = switchTab;
+        window.loadAYs = loadAYs;
+        window.showAddAYModal = showAddAYModal;
+        window.saveAddAY = saveAddAY;
+        window.setActiveAY = setActiveAY;
+        window.editAY = editAY;
+        window.saveEditAY = saveEditAY;
+        window.deleteAY = deleteAY;
+
+        window.loadDocTypes = loadDocTypes;
+        window.showAddDocModal = showAddDocModal;
+        window.saveDocType = saveDocType;
+        window.editDocType = editDocType;
+        window.saveEditDocType = saveEditDocType;
+        window.deleteDocType = deleteDocType;
+
+        window.loadOffices = loadOffices;
+        window.showAddOfficeModal = showAddOfficeModal;
+        window.saveOffice = saveOffice;
+        window.editOffice = editOffice;
+        window.saveEditOffice = saveEditOffice;
+        window.deleteOffice = deleteOffice;
+        window.toggleOffice = toggleOffice;
+
+        window.loadSystemConfig = loadSystemConfig;
+        window.saveActivePeriod = saveActivePeriod;
+        window.loadSubmissionDeadlines = loadSubmissionDeadlines;
+        window.showDeadlineModal = showDeadlineModal;
+        window.saveDeadline = saveDeadline;
+        window.deleteDeadline = deleteDeadline;
+
+        window.loadAnnouncements = loadAnnouncements;
+        window.openAnnouncementModal = openAnnouncementModal;
+        window.deleteAnnouncement = deleteAnnouncement;
+
+        // Init
+        switchTab('system');
+
+        // Form Submit
         document.getElementById('announcementForm').addEventListener('submit', function(e) {
             e.preventDefault();
-            const formData = new FormData(this);
-            formData.append('action', 'post_announcement');
-            const submitBtn = this.querySelector('button[type="submit"]');
+            const formData = new FormData(document.getElementById('announcementForm'));
+            const annId = document.getElementById('announcement-id').value;
+            const action = annId ? 'edit_announcement' : 'post_announcement';
+            formData.append('action', action);
+            
+            const submitBtn = document.getElementById('announcement-submit-btn');
             const originalText = submitBtn.innerHTML;
             submitBtn.disabled = true;
-            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Posting...';
+            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
 
-            fetch('../../api/announcements_api.php', {
+            fetch('../../api/announcements_api.php?action=' + action, {
                 method: 'POST',
-                body: formData
+                body: formData,
+                credentials: 'same-origin'
             })
             .then(res => res.json())
             .then(data => {
                 alert(data.message);
                 if (data.success) {
                     document.getElementById('announcementModal').classList.add('hidden');
-                    this.reset();
+                    const form = document.getElementById('announcementForm');
+                    if (form) {
+                        form.reset();
+                    }
+                    document.getElementById('announcement-id').value = '';
+                    document.getElementById('remove-image-flag').value = '0';
+                    document.getElementById('announcement-image-preview-container').classList.add('hidden');
+                    loadAnnouncements();
                 }
             })
             .catch(err => {
-                alert('An error occurred while posting.');
+                alert('An error occurred while saving.');
             })
             .finally(() => {
                 submitBtn.disabled = false;
                 submitBtn.innerHTML = originalText;
             });
         });
+
+        // Diagnostic logger
+        setTimeout(() => {
+            const aySelect = document.getElementById('active-system-ay');
+            const customContainer = document.getElementById('custom-container-active-system-ay');
+            const logData = {
+                url: window.location.href,
+                aySelectExists: !!aySelect,
+                aySelectHtml: aySelect ? aySelect.innerHTML : 'null',
+                aySelectOptionsCount: aySelect ? aySelect.options.length : 0,
+                aySelectValue: aySelect ? aySelect.value : 'null',
+                customContainerExists: !!customContainer,
+                customContainerHtml: customContainer ? customContainer.innerHTML : 'null',
+                cookies: document.cookie
+            };
+            fetch('../../api/debug_helper.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ log: JSON.stringify(logData, null, 2) })
+            }).catch(e => {});
+        }, 1500);
     </script>
 </body>
 </html>

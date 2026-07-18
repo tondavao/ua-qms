@@ -8,7 +8,6 @@ class UniversalFileViewer {
         this.modal = null;
         this.contentArea = null;
         this.titleArea = null;
-        this.downloadBtn = null;
         this.initModal();
     }
 
@@ -32,12 +31,6 @@ class UniversalFileViewer {
                             </h3>
 
                             <div class="flex items-center gap-2">
-
-                                <a id="universal-file-viewer-download"
-                                   href="#"
-                                   class="px-3 py-2 rounded-lg bg-red-800 text-white hover:bg-red-900 transition flex items-center gap-2 text-sm font-semibold border border-red-700">
-                                    <i class="fas fa-download"></i> <span class="hidden sm:inline">Download</span>
-                                </a>
 
                                 <button id="universal-file-viewer-close"
                                         class="px-3 py-2 rounded-lg bg-red-800 text-white hover:bg-red-900 transition flex items-center gap-2 text-sm font-semibold border border-red-700">
@@ -68,7 +61,6 @@ class UniversalFileViewer {
         this.modal = modal;
         this.contentArea = document.getElementById("universal-file-viewer-content");
         this.titleArea = document.getElementById("universal-file-viewer-title");
-        this.downloadBtn = document.getElementById("universal-file-viewer-download");
 
         document
             .getElementById("universal-file-viewer-close")
@@ -94,6 +86,12 @@ class UniversalFileViewer {
             return;
         }
 
+        // Normalize backslashes to forward slashes for URL compatibility
+        originalFilePath = originalFilePath.replace(/\\/g, '/');
+        if (previewFilePath) {
+            previewFilePath = previewFilePath.replace(/\\/g, '/');
+        }
+
         this.modal.classList.remove("hidden");
         // Trigger reflow for transition
         void this.modal.offsetWidth;
@@ -103,9 +101,6 @@ class UniversalFileViewer {
         document.getElementById("viewer-container").classList.add("scale-100");
 
         this.titleArea.textContent = fileName;
-
-        this.downloadBtn.href = originalFilePath;
-        this.downloadBtn.setAttribute("download", fileName);
 
         let previewPath = previewFilePath || originalFilePath;
 
@@ -205,6 +200,34 @@ ${this.escapeHtml(text)}
                 </div>
             `;
         }, 300);
+    }
+
+    forceDownload(url, filename) {
+        const cleanUrl = url.replace(/\\/g, '/');
+        fetch(cleanUrl)
+            .then(response => {
+                if (!response.ok) throw new Error("Network response was not ok");
+                return response.blob();
+            })
+            .then(blob => {
+                const blobUrl = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = blobUrl;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(blobUrl);
+            })
+            .catch(() => {
+                const a = document.createElement('a');
+                a.href = cleanUrl;
+                a.download = filename;
+                a.target = '_blank';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            });
     }
 
     escapeHtml(text) {

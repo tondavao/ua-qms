@@ -174,8 +174,8 @@ if ($action === 'delete_revision_document') {
         exit();
     }
 
-    // Verify document belongs to this office and is in 'Revision' status
-    $sql_check = "SELECT document_id, file_path, preview_path FROM documents WHERE document_id = ? AND office_id = ? AND status = 'Revision'";
+    // Verify document belongs to this office and is in 'Revision' or 'Awaiting Review' status
+    $sql_check = "SELECT document_id, file_path, preview_path, status FROM documents WHERE document_id = ? AND office_id = ? AND status IN ('Revision', 'Awaiting Review')";
     $stmt_check = $conn->prepare($sql_check);
     $stmt_check->bind_param("ii", $document_id, $office_id);
     $stmt_check->execute();
@@ -183,7 +183,7 @@ if ($action === 'delete_revision_document') {
 
     if ($res_check->num_rows === 0) {
         http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'Document not found or cannot be deleted (must be in Revision status)']);
+        echo json_encode(['success' => false, 'message' => 'Document not found or cannot be deleted (must be in Revision or Awaiting Review status)']);
         exit();
     }
 
@@ -220,9 +220,9 @@ if ($action === 'delete_revision_document') {
 
     if ($stmt_delete->execute()) {
         // Also log this deletion
-        $action_desc = "Document Deleted: Document ID " . $document_id . " (Revision status)";
+        $action_desc = "Document Deleted: Document ID " . $document_id . " (" . ($doc['status'] ?? 'Unknown') . " status)";
         $ip_address = $_SERVER['REMOTE_ADDR'] ?? '';
-        $sql_log = "INSERT INTO system_logs (user_id, action, details, ip_address) VALUES (?, ?, 'Revision document deleted by user', ?)";
+        $sql_log = "INSERT INTO system_logs (user_id, action, details, ip_address) VALUES (?, ?, 'Document deleted by user', ?)";
         $stmt_log = $conn->prepare($sql_log);
         $stmt_log->bind_param("iss", $user_id, $action_desc, $ip_address);
         $stmt_log->execute();

@@ -89,7 +89,7 @@ $sql_targets = "SELECT ts.target_id, ts.doc_type_id, ts.deadline, ts.quarter, ts
                 JOIN document_types dt ON ts.doc_type_id = dt.doc_type_id
                 WHERE ts.year = ? AND ts.deadline >= CURDATE()";
 $stmt_targets = $conn->prepare($sql_targets);
-$stmt_targets->bind_param("i", $target_year);
+$stmt_targets->bind_param("s", $active_ay);
 $stmt_targets->execute();
 $targets_res = $stmt_targets->get_result();
 

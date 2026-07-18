@@ -38,9 +38,30 @@ body {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    background:
+        radial-gradient(circle at 22% 46%, rgba(128, 0, 0, 0.04), transparent 30%),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0) 42%);
 }
 
 .login-page::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    bottom: 52px;
+    z-index: 0;
+    width: clamp(620px, 46vw, 780px);
+    aspect-ratio: 2000 / 1545;
+    background: url("../img/man.png") right bottom / contain no-repeat;
+    filter: grayscale(1) brightness(0);
+    opacity: 0.12;
+    pointer-events: none;
+    transform: scaleX(-1);
+    transform-origin: center;
+    animation: fadeInLeftSilhouette 1.2s ease-out both;
+}
+
+.login-page::after {
+    --pattern-opacity: 0.05;
     content: "";
     position: absolute;
     right: -100px;
@@ -49,20 +70,9 @@ body {
     width: clamp(500px, 50vw, 700px);
     aspect-ratio: 1;
     background: url("../img/pat.png?v=5") right bottom / contain no-repeat;
-    opacity: 0.15;
+    opacity: var(--pattern-opacity);
     pointer-events: none;
-    animation: fadeIn 1.2s ease-out both;
-}
-
-.login-page::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    z-index: 0;
-    background:
-        radial-gradient(circle at 22% 46%, rgba(128, 0, 0, 0.06), transparent 30%),
-        linear-gradient(90deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0) 42%);
-    pointer-events: none;
+    animation: fadeInPattern 1.2s ease-out both;
 }
 
 .login-shell {
@@ -96,15 +106,28 @@ body {
     margin-bottom: 30px;
 }
 
-.seal-row img {
+.logos-container {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+}
+
+.seal-row .uni-logo {
     width: 124px;
     height: 124px;
     border-radius: 50%;
-}
-
-.seal-row img {
     object-fit: cover;
     background: #fff;
+}
+
+.seal-row .iso-logo {
+    height: 96px;
+    width: auto;
+    object-fit: contain;
+    background: #fff;
+    border-radius: 4px;
+    padding: 2px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
 }
 
 .institution-copy {
@@ -437,10 +460,15 @@ body {
     }
 
     .login-page::before {
+        display: none;
+    }
+    .login-page::after {
+        --pattern-opacity: 0.06;
         left: -70px;
+        right: auto;
         bottom: 44px;
         width: 680px;
-        opacity: 0.18;
+        opacity: var(--pattern-opacity);
     }
 }
 
@@ -466,9 +494,13 @@ body {
         margin-bottom: 20px;
     }
 
-    .seal-row img {
+    .seal-row .uni-logo {
         width: 86px;
         height: 86px;
+    }
+
+    .seal-row .iso-logo {
+        height: 64px;
     }
 
     .eyebrow,
@@ -496,10 +528,15 @@ body {
     }
 
     .login-page::before {
+        display: none;
+    }
+    .login-page::after {
+        --pattern-opacity: 0.04;
         left: -130px;
+        right: auto;
         bottom: 120px;
         width: 620px;
-        opacity: 0.14;
+        opacity: var(--pattern-opacity);
     }
 
     .form-row,
@@ -559,5 +596,25 @@ body {
     }
     to {
         opacity: 1;
+    }
+}
+
+@keyframes fadeInLeftSilhouette {
+    from {
+        opacity: 0;
+        transform: scaleX(-1) translateX(30px);
+    }
+    to {
+        opacity: 0.12;
+        transform: scaleX(-1) translateX(0);
+    }
+}
+
+@keyframes fadeInPattern {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: var(--pattern-opacity);
     }
 }

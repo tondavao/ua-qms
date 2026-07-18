@@ -20,7 +20,6 @@ function openFileViewer(filePath, fileName) {
 
     const content = document.getElementById('file-viewer-content');
     const title = document.getElementById('file-viewer-title');
-    const downloadBtn = document.getElementById('file-viewer-download');
     
     // Clear previous content
     content.innerHTML = '<div class="flex flex-col items-center justify-center w-full h-full text-white"><i class="fas fa-spinner fa-spin fa-2x mb-3"></i> Loading preview...</div>';
@@ -28,10 +27,6 @@ function openFileViewer(filePath, fileName) {
     
     // Normalize file path
     let cleanPath = normalizePath(filePath);
-    
-    // Set download link
-    downloadBtn.href = cleanPath;
-    downloadBtn.setAttribute('download', fileName);
     
     // Determine file type
     const fileExt = fileName.split('.').pop().toLowerCase();
@@ -63,35 +58,25 @@ function openFileViewer(filePath, fileName) {
 function normalizePath(filePath) {
     if (!filePath) return '';
     
+    // Replace all backslashes with forward slashes for URL compatibility
+    let cleanPath = filePath.replace(/\\/g, '/');
+    
     // If it's already an absolute URL, return it
-    if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
-        return filePath;
+    if (cleanPath.startsWith('http://') || cleanPath.startsWith('https://')) {
+        return cleanPath;
     }
-
-    // Fix for paths stored as relative to the root or uploads folder
-    // The backend stores paths like "../../uploads/documents/..."
-    // We need to make sure they resolve correctly from wherever the user is
     
-    let cleanPath = filePath;
-    
-    // If we are in a dashboard subdirectory (e.g., /dashboard/qmo/repository.php)
-    // and the path starts with ../../, it's already correct.
-    // However, if the path is stored as "uploads/documents/...", we need to adjust it.
-    
+    let cleanPathFinal = cleanPath;
     const currentPath = window.location.pathname;
     const isInDashboard = currentPath.includes('/dashboard/');
     
     if (isInDashboard) {
-        if (!cleanPath.startsWith('../')) {
-            // If it's a direct path from root, we might need to go up
-            // This depends on how the app is hosted. 
-            // Assuming standard structure: /ua-qms/dashboard/qmo/page.php
-            // and uploads are at /ua-qms/uploads/
-            cleanPath = '../../' + cleanPath.replace(/^\/+/, '');
+        if (!cleanPathFinal.startsWith('../')) {
+            cleanPathFinal = '../../' + cleanPathFinal.replace(/^\/+/, '');
         }
     }
     
-    return cleanPath;
+    return cleanPathFinal;
 }
 
 /**
@@ -221,9 +206,6 @@ function createFileViewerModal() {
                 <div class="file-viewer-header">
                     <h3 id="file-viewer-title">Document Preview</h3>
                     <div class="file-viewer-actions">
-                        <a id="file-viewer-download" href="#" class="file-viewer-btn" title="Download (Ctrl+D)">
-                            <i class="fas fa-download"></i>
-                        </a>
                         <button class="file-viewer-btn file-viewer-close" onclick="closeFileViewer()" title="Close (ESC)">
                             <i class="fas fa-times fa-lg"></i>
                         </button>
@@ -246,12 +228,34 @@ function createFileViewerModal() {
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
             closeFileViewer();
-        } else if (e.ctrlKey && e.key === 'd') {
-            e.preventDefault();
-            const downloadBtn = document.getElementById('file-viewer-download');
-            if (downloadBtn && downloadBtn.href) {
-                downloadBtn.click();
-            }
         }
     });
+}
+
+function forceDownloadFile(url, filename) {
+    const cleanUrl = url.replace(/\\/g, '/');
+    fetch(cleanUrl)
+        .then(response => {
+            if (!response.ok) throw new Error("Network response was not ok");
+            return response.blob();
+        })
+        .then(blob => {
+            const blobUrl = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(blobUrl);
+        })
+        .catch(() => {
+            const a = document.createElement('a');
+            a.href = cleanUrl;
+            a.download = filename;
+            a.target = '_blank';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        });
 }

@@ -113,7 +113,7 @@ body {
 
 main > header {
     position: relative;
-    overflow: hidden;
+    overflow: visible !important;
 }
 
 main > header::before {

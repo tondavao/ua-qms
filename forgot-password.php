@@ -77,6 +77,7 @@ if (isset($_GET['token'])) {
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<link rel="icon" type="image/jpeg" href="assets/img/ua-qms-logo.jpg">
 <meta charset="UTF-8">
 <title>Forgot Password | UA QMS</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">

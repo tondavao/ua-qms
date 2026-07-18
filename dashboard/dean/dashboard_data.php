@@ -1,6 +1,7 @@
 <?php
 session_start();
-require_once "../../config/db.php";
+require_once __DIR__ . "/../../config/db.php";
+require_once __DIR__ . "/../../includes/system_settings.php";
 
 header('Content-Type: application/json');
 
@@ -14,15 +15,9 @@ $dean_id = $_SESSION['user_id'];
 $office_id = $_SESSION['office_id'] ?? 0;
 
 // Load active academic year and active semester from system configurations
-$settings = [];
-$settings_result = $conn->query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('active_academic_year', 'active_semester')");
-if ($settings_result) {
-    while ($row = $settings_result->fetch_assoc()) {
-        $settings[$row['setting_key']] = $row['setting_value'];
-    }
-}
-$active_year = $settings['active_academic_year'] ?? date('Y') . '-' . (date('Y') + 1);
-$active_semester = $settings['active_semester'] ?? '1st Semester';
+$period = ua_qms_get_active_period($conn);
+$active_year = $period['active_year'];
+$active_semester = $period['active_semester'];
 
 // Parse target year
 $year_parts = explode('-', $active_year);
@@ -44,10 +39,27 @@ while($row = $result->fetch_assoc()) {
 }
 $stmt->close();
 
-$total_docs = $stats['approved'] + $stats['pending'] + $stats['revision'];
-if($total_docs > 0) {
-    $stats['completion_rate'] = round(($stats['approved'] / $total_docs) * 100);
-}
+// Calculate completion rate based on QMO compliance logic: (Approved Required Doc Types / Total Required Doc Types)
+$res_req = $conn->query("SELECT COUNT(*) as total_req FROM document_types WHERE required = 'Yes'");
+$total_required_docs = ($res_req && $row_req = $res_req->fetch_assoc()) ? (int)$row_req['total_req'] : 8;
+
+$stmt_app = $conn->prepare("
+    SELECT COUNT(DISTINCT d.doc_type_id) as approved_count 
+    FROM documents d
+    JOIN document_types dt ON d.doc_type_id = dt.doc_type_id
+    WHERE d.office_id = ? 
+      AND d.status = 'Approved' 
+      AND d.academic_year = ? 
+      AND d.semester = ? 
+      AND dt.required = 'Yes'
+");
+$stmt_app->bind_param("iss", $office_id, $active_year, $active_semester);
+$stmt_app->execute();
+$res_app = $stmt_app->get_result()->fetch_assoc();
+$approved_required_count = (int)($res_app['approved_count'] ?? 0);
+$stmt_app->close();
+
+$stats['completion_rate'] = $total_required_docs > 0 ? round(($approved_required_count / $total_required_docs) * 100) : 0;
 
 // Fetch Upcoming Deadlines
 $deadlines = [];
@@ -57,7 +69,7 @@ $sql_deadlines = "SELECT ts.deadline, dt.doc_code, dt.description
                   WHERE ts.year = ? AND ts.deadline >= CURDATE() 
                   ORDER BY ts.deadline ASC LIMIT 3";
 $stmt_deadlines = $conn->prepare($sql_deadlines);
-$stmt_deadlines->bind_param("i", $target_year);
+$stmt_deadlines->bind_param("s", $active_year);
 $stmt_deadlines->execute();
 $res_deadlines = $stmt_deadlines->get_result();
 while($row = $res_deadlines->fetch_assoc()) {

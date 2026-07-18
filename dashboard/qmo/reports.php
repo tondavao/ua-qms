@@ -1,6 +1,7 @@
 <?php
 session_start();
-require_once "../../config/db.php";
+require_once __DIR__ . "/../../config/db.php";
+require_once __DIR__ . "/../../includes/system_settings.php";
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'QMO Admin') {
     header("Location: ../../index.php");
@@ -162,6 +163,7 @@ $overall_rate = $total_required > 0 ? round(($total_approved / $total_required) 
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="icon" type="image/jpeg" href="../../assets/img/ua-qms-logo.jpg">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Compliance Reports | UA QMS</title>
@@ -177,35 +179,35 @@ $overall_rate = $total_required > 0 ? round(($total_approved / $total_required) 
         :root { --ua-maroon: #800000; }
         .bg-ua-maroon { background-color: var(--ua-maroon); }
         .text-ua-maroon { color: var(--ua-maroon); }
-        .profile-dropdown {
-            position: absolute;
-            right: 0;
-            top: 55px;
-            width: 220px;
-            background: white;
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-            overflow: hidden;
-            display: none;
-            z-index: 100;
-        }
-        .profile-dropdown.active { display: block; }
-        .profile-dropdown-header { padding: 12px 16px; border-bottom: 1px solid #e5e7eb; }
-        .profile-dropdown-item { display: flex; gap: 10px; padding: 12px 16px; color: #374151; text-decoration: none; }
-        .profile-dropdown-item:hover { background: #f3f4f6; }
-        .profile-dropdown-item.logout { color: #dc2626; border-top: 1px solid #e5e7eb; }
 
         @media print {
+            @page {
+                size: legal landscape; /* Long Bondpaper (8.5in x 14in) */
+                margin: 15mm 15mm 15mm 15mm;
+            }
             body { background: white !important; color: black !important; font-size: 11px; }
             .no-print { display: none !important; }
             .print-only { display: block !important; }
-            main { padding: 0 !important; margin: 0 !important; overflow: visible !important; }
+            main { padding: 0 !important; margin: 0 !important; overflow: visible !important; width: 100% !important; max-width: 100% !important; }
             .flex-1 { overflow: visible !important; }
             .overflow-auto { overflow: visible !important; }
-            .bg-white { border: none !important; box-shadow: none !important; }
-            table { width: 100% !important; border-collapse: collapse !important; }
-            th, td { border: 1px solid #e5e7eb !important; padding: 6px !important; }
+            div.overflow-x-auto { overflow: visible !important; }
+            
+            /* Remove shadows, borders, and rounded corners on container */
+            .bg-white, .rounded-xl, .shadow-sm, .border, .overflow-hidden {
+                border-radius: 0 !important;
+                border: none !important;
+                box-shadow: none !important;
+                background: transparent !important;
+            }
+            
+            /* Plain and formal table styles */
+            table { width: 100% !important; border-collapse: collapse !important; margin-top: 10px !important; border-radius: 0 !important; box-shadow: none !important; }
+            th, td { border: 1px solid #64748b !important; padding: 8px !important; text-align: left !important; color: black !important; border-radius: 0 !important; }
+            th { font-weight: bold !important; text-transform: uppercase !important; font-size: 10px !important; background-color: #f1f5f9 !important; border-bottom: 2px solid black !important; }
+            td { font-size: 10px !important; }
+            span { background: transparent !important; color: black !important; padding: 0 !important; font-weight: normal !important; }
+            td.font-bold, td span.font-bold, td.text-right, td.text-right span { font-weight: bold !important; }
         }
     </style>
 </head>
@@ -213,7 +215,7 @@ $overall_rate = $total_required > 0 ? round(($total_approved / $total_required) 
 <script>localStorage.setItem('userRole', '<?php echo h($_SESSION['role']); ?>');</script>
 <div class="flex h-screen overflow-hidden">
     <!-- Sidebar -->
-    <?php include "../../includes/sidebar_qmo.php"; ?>
+    <?php require_once __DIR__ . "/../../includes/sidebar_qmo.php"; ?>
 
     <main class="flex-1 flex flex-col overflow-hidden">
         <!-- Topbar -->
@@ -233,8 +235,12 @@ $overall_rate = $total_required > 0 ? round(($total_approved / $total_required) 
                         <span id="notification-badge" class="absolute top-1 right-1 min-w-[16px] h-4 px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center hidden">0</span>
                     </button>
                     <div class="relative">
-                        <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition">
-                            <?php echo h(isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'); ?>
+                        <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition overflow-hidden">
+                            <?php if (!empty($_SESSION['profile_photo'])): ?>
+                                <img src="<?php echo htmlspecialchars($_SESSION['profile_photo']); ?>" class="w-full h-full object-cover rounded-full" alt="Profile" />
+                            <?php else: ?>
+                                <?php echo h(isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'); ?>
+                            <?php endif; ?>
                         </button>
                         <div id="profile-dropdown" class="profile-dropdown">
                             <div class="profile-dropdown-header">
@@ -254,25 +260,26 @@ $overall_rate = $total_required > 0 ? round(($total_approved / $total_required) 
         <div class="flex-1 overflow-auto p-4 md:p-8 space-y-6">
             
             <!-- Print Only Header -->
-            <div class="hidden print-only mb-6">
-                <div class="flex items-center justify-between pb-4 border-b-2 border-[#800000]">
-                    <div class="flex items-center gap-4">
-                        <img src="../../assets/img/ua-qms-logo.jpg" alt="UA Logo" class="w-16 h-16 rounded-full border border-gray-150">
-                        <div>
-                            <h2 class="text-xl font-bold text-[#800000] tracking-wide">UNIVERSITY OF ANTIQUE</h2>
-                            <p class="text-xs font-semibold text-gray-600">Tario-Lim Memorial Campus | Quality Management Office</p>
-                            <h3 class="text-sm font-bold text-gray-800 mt-2">QMS Submissions Compliance Report</h3>
-                        </div>
-                    </div>
-                    <div class="text-right text-xs text-gray-500">
-                        <p><strong>Generated:</strong> <?php echo date('F d, Y h:i A'); ?></p>
-                        <p><strong>Period:</strong> <?php echo h($selected_quarter); ?> (AY <?php echo h($selected_year); ?>)</p>
-                    </div>
+            <div hidden class="print-only mb-6 text-center">
+                <div class="flex flex-col items-center justify-center mb-4">
+                    <img src="<?php echo $_SESSION['logo_base64']; ?>" alt="UA Logo" class="w-20 h-20 rounded-full mb-3 border border-gray-300">
+                    <h2 class="text-xl font-bold text-gray-900 uppercase tracking-wide">UNIVERSITY OF ANTIQUE</h2>
+                    <p class="text-sm font-bold text-gray-700">Tario-Lim Memorial Campus</p>
+                    <p class="text-sm text-gray-600">Tibiao, Antique</p>
+                    <p class="text-sm font-bold text-gray-700">Quality Management Office</p>
+                    
+                    <h3 class="text-lg font-bold text-gray-900 mt-6 tracking-wide uppercase">QMS Submissions Compliance Report</h3>
+                    <p class="text-xs text-gray-500 mt-2">
+                        <strong>Period:</strong> <?php echo h($selected_quarter); ?> (AY <?php echo h($selected_year); ?>)
+                        &middot; 
+                        <strong>Generated:</strong> <?php echo date('F d, Y h:i A'); ?>
+                    </p>
                 </div>
+                <hr class="border-t border-black my-4">
             </div>
 
             <!-- Report Summary Metrics -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
+            <div class="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6 no-print">
                 <div class="bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
                     <p class="text-sm font-medium text-gray-500">Filtered Compliance</p>
                     <p class="mt-2 text-3xl font-bold text-gray-900"><?php echo $overall_rate; ?>%</p>
@@ -300,15 +307,15 @@ $overall_rate = $total_required > 0 ? round(($total_approved / $total_required) 
                 <form method="GET" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-4 items-end">
                     <div>
                         <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Academic Year</label>
-                        <select name="year" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none text-sm">
+                        <select name="year" onchange="this.form.submit()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none text-sm">
                             <?php foreach ($academic_years as $y): ?>
                                 <option value="<?php echo h($y); ?>" <?php echo $selected_year === $y ? 'selected' : ''; ?>><?php echo h($y); ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
                     <div>
-                        <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Quarter</label>
-                        <select name="quarter" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none text-sm">
+                        <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Period</label>
+                        <select name="quarter" onchange="this.form.submit()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none text-sm">
                             <?php foreach ($quarters as $q): ?>
                                 <option value="<?php echo h($q); ?>" <?php echo $selected_quarter === $q ? 'selected' : ''; ?>><?php echo h($q); ?></option>
                             <?php endforeach; ?>
@@ -316,7 +323,7 @@ $overall_rate = $total_required > 0 ? round(($total_approved / $total_required) 
                     </div>
                     <div>
                         <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Category</label>
-                        <select name="category" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none text-sm">
+                        <select name="category" onchange="this.form.submit()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none text-sm">
                             <option value="">All Categories</option>
                             <option value="Academic" <?php echo $selected_category === 'Academic' ? 'selected' : ''; ?>>Academic</option>
                             <option value="Non-Academic" <?php echo $selected_category === 'Non-Academic' ? 'selected' : ''; ?>>Non-Academic</option>
@@ -324,7 +331,7 @@ $overall_rate = $total_required > 0 ? round(($total_approved / $total_required) 
                     </div>
                     <div>
                         <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Office / Unit</label>
-                        <select name="office" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none text-sm">
+                        <select name="office" onchange="this.form.submit()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none text-sm">
                             <option value="">All Offices</option>
                             <?php foreach ($offices_list as $off): ?>
                                 <option value="<?php echo $off['office_id']; ?>" <?php echo $selected_office == $off['office_id'] ? 'selected' : ''; ?>>
@@ -334,8 +341,8 @@ $overall_rate = $total_required > 0 ? round(($total_approved / $total_required) 
                         </select>
                     </div>
                     <div>
-                        <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Doc Type</label>
-                        <select name="doc_type" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none text-sm">
+                        <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Document Type</label>
+                        <select name="doc_type" onchange="this.form.submit()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none text-sm">
                             <option value="">All Types</option>
                             <?php foreach ($doc_types_list as $dt): ?>
                                 <option value="<?php echo $dt['doc_type_id']; ?>" <?php echo (isset($_GET['doc_type']) && $_GET['doc_type'] == $dt['doc_type_id']) ? 'selected' : ''; ?>>
@@ -423,21 +430,7 @@ $overall_rate = $total_required > 0 ? round(($total_approved / $total_required) 
 </div>
 
 <script>
-    // Profile dropdown toggle
-    const profileBtn = document.getElementById('profile-btn');
-    const profileDropdown = document.getElementById('profile-dropdown');
-    if (profileBtn && profileDropdown) {
-        profileBtn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            profileDropdown.classList.toggle('active');
-        });
-        document.addEventListener('click', function(e) {
-            if (!e.target.closest('#profile-btn') && !e.target.closest('#profile-dropdown')) {
-                profileDropdown.classList.remove('active');
-            }
-        });
-    }
-
+(function() {
     // Client-side CSV export
     function exportCSV() {
         const table = document.getElementById('report-table');
@@ -476,6 +469,8 @@ $overall_rate = $total_required > 0 ? round(($total_approved / $total_required) 
             }
         }
     }
+    window.exportCSV = exportCSV;
+})();
 </script>
 </body>
 </html>

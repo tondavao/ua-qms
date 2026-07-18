@@ -20,6 +20,10 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'QMO Admin') {
 $action = $_GET['action'] ?? '';
 $user_id = $_SESSION['user_id'];
 
+// Read JSON input for POST requests
+$input = json_decode(file_get_contents('php://input'), true) ?? [];
+$_POST = array_merge($_POST, $input);
+
 // Get all repository documents with advanced filtering
 if ($action === 'get_repository_documents') {
     $search_query = $_GET['search'] ?? '';

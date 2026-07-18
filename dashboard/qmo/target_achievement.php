@@ -6,25 +6,36 @@
  */
 
 session_start();
-include "../../config/db.php";
+
+if (!function_exists('h')) {
+    function h($value) {
+        return htmlspecialchars((string) ($value ?? ''), ENT_QUOTES, 'UTF-8');
+    }
+}
+
+require_once __DIR__ . "/../../config/db.php";
+require_once __DIR__ . "/../../includes/system_settings.php";
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'QMO Admin') {
     header('Location: ../../index.php');
     exit();
 }
 
-$quarter = $_GET['quarter'] ?? '1st Quarter';
+$period = ua_qms_get_active_period($conn);
+$active_ay = $period['active_year'] ?? (date('Y') . '-' . (date('Y') + 1));
+$active_sem = $period['active_semester'] ?? '1st Quarter';
+
+$quarter = $_GET['quarter'] ?? $active_sem;
 $office_id = $_GET['office_id'] ?? null;
 
 // Fetch academic years
 $academic_years = [];
 $sql_ay = "SELECT year_range, is_active FROM academic_years ORDER BY year_range DESC";
 $res_ay = $conn->query($sql_ay);
-$active_ay = date('Y') . '-' . (date('Y') + 1);
 if ($res_ay) {
     while ($row = $res_ay->fetch_assoc()) {
         $academic_years[] = $row;
-        if ($row['is_active']) {
+        if ($row['is_active'] && !isset($period['active_year'])) {
             $active_ay = $row['year_range'];
         }
     }
@@ -167,6 +178,7 @@ if ($office_id) {
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="icon" type="image/jpeg" href="../../assets/img/ua-qms-logo.jpg">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Target Achievement | UA QMS</title>
@@ -193,7 +205,7 @@ if ($office_id) {
 <body class="bg-gray-50 font-sans" data-user-role="<?php echo htmlspecialchars($_SESSION['role']); ?>">
     <script>localStorage.setItem('userRole', '<?php echo htmlspecialchars($_SESSION['role']); ?>');</script>
     <div class="flex h-screen overflow-hidden">
-        <?php include "../../includes/sidebar_qmo.php"; ?>
+        <?php require_once __DIR__ . "/../../includes/sidebar_qmo.php"; ?>
 
         <!-- Main Content -->
         <main class="flex-1 flex flex-col overflow-hidden">
@@ -218,9 +230,13 @@ if ($office_id) {
                         </button>
                         <!-- Profile Dropdown -->
                         <div class="relative">
-                            <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition">
-                                <?php echo isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'; ?>
-                            </button>
+                            <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition overflow-hidden">
+                            <?php if (!empty($_SESSION['profile_photo'])): ?>
+                                <img src="<?php echo htmlspecialchars($_SESSION['profile_photo']); ?>" class="w-full h-full object-cover rounded-full" alt="Profile" />
+                            <?php else: ?>
+                                <?php echo h(isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'); ?>
+                            <?php endif; ?>
+                        </button>
                             <div id="profile-dropdown" class="profile-dropdown">
                                 <div class="profile-dropdown-header">
                                     <p><?php echo htmlspecialchars($_SESSION['full_name'] ?? 'User'); ?></p>
@@ -243,7 +259,7 @@ if ($office_id) {
                 <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
                     <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
                         <div>
-                            <label class="block text-sm font-semibold text-gray-700 mb-2">Quarter</label>
+                            <label class="block text-sm font-semibold text-gray-700 mb-2">Period</label>
                             <select onchange="updateFilters()" id="quarterSelect" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none">
                                 <option value="1st Quarter" <?php echo $quarter === '1st Quarter' ? 'selected' : ''; ?>>1st Quarter</option>
                                 <option value="2nd Quarter" <?php echo $quarter === '2nd Quarter' ? 'selected' : ''; ?>>2nd Quarter</option>
@@ -359,10 +375,10 @@ if ($office_id) {
                                                         <i class="fas fa-check-circle"></i> Completed
                                                     </span>
                                                 <?php else: ?>
-                                                    <span class="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold bg-orange-100 text-orange-800">
-                                                        <i class="fas fa-clock"></i> Pending
-                                                    </span>
-                                                <?php endif; ?>
+                                                     <span class="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-800">
+                                                         <i class="fas fa-exclamation-circle"></i> Missing
+                                                     </span>
+                                                 <?php endif; ?>
                                             </td>
                                         </tr>
                                     <?php endforeach; ?>
@@ -481,6 +497,7 @@ if ($office_id) {
     </div>
 
     <script>
+    (function() {
         function updateFilters() {
             const quarter = document.getElementById('quarterSelect').value;
             const academic_year = document.getElementById('yearSelect').value;
@@ -498,22 +515,9 @@ if ($office_id) {
         }
     
 
-                // Profile Dropdown Toggle
-        const profileBtn = document.getElementById('profile-btn');
-        const profileDropdown = document.getElementById('profile-dropdown');
-        
-        if (profileBtn && profileDropdown) {
-            profileBtn.addEventListener('click', function() {
-                profileDropdown.classList.toggle('active');
-            });
-            
-            // Close dropdown when clicking outside
-            document.addEventListener('click', function(event) {
-                if (!event.target.closest('#profile-btn') && !event.target.closest('#profile-dropdown')) {
-                    profileDropdown.classList.remove('active');
-                }
-            });
-        }
+                window.updateFilters = updateFilters;
+        window.resetFilters = resetFilters;
+    })();
     </script>
 </body>
 </html>

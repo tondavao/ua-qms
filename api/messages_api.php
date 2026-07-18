@@ -27,21 +27,21 @@ switch ($action) {
                        (SELECT 
                             CASE 
                                 WHEN u.role = 'QMO Admin' THEN 'QMO Office'
-                                WHEN o.office_name IS NOT NULL THEN o.office_name
-                                ELSE u.role 
+                                WHEN o.office_code IS NOT NULL THEN o.office_code
+                                ELSE u.full_name 
                             END
-                        FROM messages m 
-                        JOIN users u ON m.sender_id = u.user_id 
+                        FROM conversation_participants cp_other
+                        JOIN users u ON cp_other.user_id = u.user_id 
                         LEFT JOIN offices o ON u.office_id = o.office_id
-                        WHERE m.conversation_id = c.conversation_id 
-                        ORDER BY m.created_at DESC LIMIT 1) as last_message_sender_name,
+                        WHERE cp_other.conversation_id = c.conversation_id AND cp_other.user_id != ?
+                        LIMIT 1) as last_message_sender_name,
                        (SELECT COUNT(m2.message_id) FROM messages m2 JOIN conversation_participants cp2 ON m2.conversation_id = cp2.conversation_id WHERE m2.conversation_id = c.conversation_id AND m2.message_id > COALESCE(cp2.last_read_message_id, 0) AND cp2.user_id = ?) as unread_count
                 FROM conversations c
                 JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id
                 WHERE cp.user_id = ?
                 ORDER BY c.last_message_at DESC";
         $stmt = $conn->prepare($sql);
-        $stmt->bind_param("ii", $user_id, $user_id);
+        $stmt->bind_param("iii", $user_id, $user_id, $user_id);
         $stmt->execute();
         $result = $stmt->get_result();
         $conversations = [];
@@ -71,8 +71,8 @@ switch ($action) {
         $sql = "SELECT m.*, 
                        CASE 
                            WHEN u.role = 'QMO Admin' THEN 'QMO Office'
-                           WHEN o.office_name IS NOT NULL THEN o.office_name
-                           ELSE u.role 
+                           WHEN o.office_code IS NOT NULL THEN o.office_code
+                           ELSE u.full_name 
                        END as sender_name,
                        u.role as sender_role
                 FROM messages m
@@ -91,6 +91,27 @@ switch ($action) {
             $last_message_id = $row['message_id'];
         }
 
+        // Fetch partner name
+        $stmt_partner = $conn->prepare("
+            SELECT 
+                CASE 
+                    WHEN u.role = 'QMO Admin' THEN 'QMO Office'
+                    WHEN o.office_code IS NOT NULL THEN o.office_code
+                    ELSE u.full_name 
+                END as partner_name
+            FROM conversation_participants cp
+            JOIN users u ON cp.user_id = u.user_id
+            LEFT JOIN offices o ON u.office_id = o.office_id
+            WHERE cp.conversation_id = ? AND cp.user_id != ?
+            LIMIT 1
+        ");
+        $stmt_partner->bind_param("ii", $conversation_id, $user_id);
+        $stmt_partner->execute();
+        $res_partner = $stmt_partner->get_result();
+        $partner_row = $res_partner->fetch_assoc();
+        $partner_name = $partner_row ? $partner_row['partner_name'] : 'Conversation';
+        $stmt_partner->close();
+
         // Mark messages as read for the current user in this conversation
         if ($last_message_id > 0) {
             $stmt = $conn->prepare("UPDATE conversation_participants SET last_read_message_id = ? WHERE conversation_id = ? AND user_id = ?");
@@ -99,7 +120,7 @@ switch ($action) {
             $stmt->close();
         }
 
-        echo json_encode(["success" => true, "messages" => $messages]);
+        echo json_encode(["success" => true, "messages" => $messages, "partner_name" => $partner_name]);
         break;
 
     case 'send_message':
@@ -192,14 +213,15 @@ switch ($action) {
     case 'get_recipients':
         $sql = "SELECT u.user_id, 
                        CASE 
-                           WHEN u.role = 'QMO Admin' THEN 'QMO Office'
-                           WHEN o.office_name IS NOT NULL THEN o.office_name
-                           ELSE u.role 
+                           WHEN u.role = 'QMO Admin' THEN CONCAT('QMO Office - ', u.full_name)
+                           WHEN o.office_code IS NOT NULL THEN CONCAT(o.office_code, ' - ', u.full_name)
+                           ELSE CONCAT(u.role, ' - ', u.full_name)
                        END as full_name, 
                        u.role 
                 FROM users u 
                 LEFT JOIN offices o ON u.office_id = o.office_id
-                WHERE u.user_id != ? AND u.status = 'Active'";
+                WHERE u.user_id != ? AND u.status = 'Active'
+                ORDER BY full_name ASC";
         $stmt = $conn->prepare($sql);
         $stmt->bind_param("i", $user_id);
         $stmt->execute();

@@ -444,20 +444,7 @@ const Notifications = {
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
         Notifications.init();
-        setupLogoutConfirmation();
     });
 } else {
     Notifications.init();
-    setupLogoutConfirmation();
-}
-
-function setupLogoutConfirmation() {
-    const logoutLinks = document.querySelectorAll('a.logout, .logout');
-    logoutLinks.forEach(link => {
-        link.addEventListener('click', function(e) {
-            if (!confirm('Are you sure you want to log out?')) {
-                e.preventDefault();
-            }
-        });
-    });
 }

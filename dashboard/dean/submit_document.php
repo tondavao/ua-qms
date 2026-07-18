@@ -1,9 +1,10 @@
 <?php
 session_start();
-include "../../config/db.php";
-require_once "../../includes/file-type-detector.php";
-require_once "../../includes/convert-to-pdf.php";
-require_once "../../includes/workflow-tracking.php";
+require_once __DIR__ . "/../../config/db.php";
+require_once __DIR__ . "/../../includes/system_settings.php";
+require_once __DIR__ . "/../../includes/file-type-detector.php";
+require_once __DIR__ . "/../../includes/convert-to-pdf.php";
+require_once __DIR__ . "/../../includes/workflow-tracking.php";
 
 /**
  * Helper function to trigger a notification
@@ -38,18 +39,15 @@ $re_submit_id = $_POST['re_submit_id'] ?? $_GET['re-submit'] ?? null;
 $re_submit_id = $re_submit_id ? (int)$re_submit_id : null;
 $previous_version = null;
 $maintenance_mode = false;
-$active_year = '2025-2026';
-$active_semester = '1st Semester';
+$period = ua_qms_get_active_period($conn);
+$active_year = $period['active_year'];
+$active_semester = $period['active_semester'];
 
-$settings_res = $conn->query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('maintenance_mode', 'active_academic_year', 'active_semester')");
+$settings_res = $conn->query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key = 'maintenance_mode'");
 if ($settings_res) {
     while ($settings_row = $settings_res->fetch_assoc()) {
         if ($settings_row['setting_key'] === 'maintenance_mode') {
             $maintenance_mode = $settings_row['setting_value'] === '1';
-        } elseif ($settings_row['setting_key'] === 'active_academic_year') {
-            $active_year = $settings_row['setting_value'];
-        } elseif ($settings_row['setting_key'] === 'active_semester') {
-            $active_semester = $settings_row['setting_value'];
         }
     }
 }
@@ -72,9 +70,21 @@ if (!$office_id) {
     }
 }
 
+$office_code = "";
+if ($office_id) {
+    $stmt_off = $conn->prepare("SELECT office_code FROM offices WHERE office_id = ?");
+    $stmt_off->bind_param("i", $office_id);
+    $stmt_off->execute();
+    $res_off = $stmt_off->get_result()->fetch_assoc();
+    if ($res_off) {
+        $office_code = $res_off['office_code'];
+    }
+    $stmt_off->close();
+}
+
 // If re-submitting, fetch previous version details for Comparison Mode
 if ($re_submit_id) {
-    $sql_prev = "SELECT d.*, dt.doc_code, dr.remarks 
+    $sql_prev = "SELECT d.*, dt.doc_code, dt.description, dr.remarks 
                  FROM documents d 
                  JOIN document_types dt ON d.doc_type_id = dt.doc_type_id
                  LEFT JOIN document_reviews dr ON d.document_id = dr.document_id
@@ -269,15 +279,23 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="icon" type="image/jpeg" href="../../assets/img/ua-qms-logo.jpg">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Submit Document | UA QMS</title>
     <link rel="stylesheet" href="../../assets/css/dashboard.css">
+    <script>
+        window.CURRENT_OFFICE_CODE = <?php echo json_encode($office_code); ?>;
+        window.PREVIOUS_VERSION = <?php echo json_encode($previous_version); ?>;
+        window.ACTIVE_YEAR = <?php echo json_encode($active_year); ?>;
+        window.ACTIVE_SEMESTER = <?php echo json_encode($active_semester); ?>;
+    </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="../../assets/js/messaging.js" defer></script>
     <script src="../../assets/js/notifications.js" defer></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="../../assets/js/scanner-processor.js"></script>
     <style>
         :root {
             --ua-maroon: #800000;
@@ -373,14 +391,14 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 </head>
 <body class="bg-gray-50 font-sans">
     <div class="flex h-screen overflow-hidden">
-        <?php include "../../includes/sidebar_dean.php"; ?>
+        <?php require_once __DIR__ . "/../../includes/sidebar_dean.php"; ?>
 
         <!-- Main Content -->
         <main class="flex-1 flex flex-col overflow-hidden">
             <!-- Topbar with Profile Icon -->
-            <header class="h-20 bg-white border-b border-gray-200 flex items-center justify-between px-8 flex-shrink-0">
-                <div class="flex items-center gap-3">
-                    <h1 class="text-lg font-bold text-gray-900 leading-tight">Submit Document</h1>
+            <header class="h-20 bg-white border-b border-gray-200 flex items-center justify-between px-4 md:px-8 flex-shrink-0 sticky top-0 z-50">
+                <div class="flex items-center gap-3 min-w-0">
+                    <h1 class="text-base md:text-lg font-bold text-gray-900 leading-tight truncate">Submit Document</h1>
                 </div>
                 <div class="flex items-center gap-6">
                     <!-- Clock -->
@@ -398,9 +416,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                         </button>
                         <!-- Profile Dropdown -->
                         <div class="relative">
-                            <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition">
-                                <?php echo isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'; ?>
-                            </button>
+                            <button id="profile-btn" class="w-10 h-10 rounded-full bg-ua-maroon flex items-center justify-center text-white font-bold cursor-pointer hover:opacity-80 transition overflow-hidden">
+                            <?php if (!empty($_SESSION['profile_photo'])): ?>
+                                <img src="<?php echo htmlspecialchars($_SESSION['profile_photo']); ?>" class="w-full h-full object-cover rounded-full" alt="Profile" />
+                            <?php else: ?>
+                                <?php echo htmlspecialchars(isset($_SESSION['full_name']) ? substr($_SESSION['full_name'], 0, 1) : 'U'); ?>
+                            <?php endif; ?>
+                        </button>
                             <div id="profile-dropdown" class="profile-dropdown">
                                 <div class="profile-dropdown-header">
                                     <p><?php echo htmlspecialchars($_SESSION['full_name'] ?? 'User'); ?></p>
@@ -484,7 +506,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 
                                         <!-- Selection Dropdown -->
                                         <div class="mb-6">
-                                            <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Document Type / Template</label>
+                                            <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Document Type</label>
                                             <?php if ($previous_version): ?>
                                                 <div class="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-lg text-gray-700 flex items-center justify-between shadow-sm">
                                                     <span class="text-sm font-semibold"><?php echo htmlspecialchars($previous_version['doc_code'] . ' - ' . ($previous_version['title'] ?? 'Document')); ?></span>
@@ -496,84 +518,78 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                                             <?php else: ?>
                                                 <div class="relative">
                                                     <select name="doc_type_id" id="doc_type_id" required class="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-sm text-gray-800 focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none appearance-none transition-all pr-10 shadow-sm font-medium">
-                                                        <option value="" disabled selected>-- Select Document Type --</option>
+                                                        <option value="" disabled <?php echo !isset($_GET['doc_type_id']) ? 'selected' : ''; ?>>-- Select Document Type --</option>
                                                         <?php foreach($doc_types as $type): ?>
-                                                            <option value="<?php echo $type['doc_type_id']; ?>">
+                                                            <option value="<?php echo $type['doc_type_id']; ?>" <?php echo (isset($_GET['doc_type_id']) && $_GET['doc_type_id'] == $type['doc_type_id']) ? 'selected' : ''; ?>>
                                                                 <?php echo htmlspecialchars($type['doc_code'] . ' - ' . $type['description']); ?>
                                                             </option>
                                                         <?php endforeach; ?>
                                                     </select>
-                                                    <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none text-gray-500">
-                                                        <i class="fas fa-chevron-down text-sm"></i>
-                                                    </div>
                                                 </div>
                                             <?php endif; ?>
                                         </div>
+                                         <!-- Submission Method Tabs -->
+                                         <div class="flex border-b border-gray-200 mb-6 bg-gray-50/50 rounded-lg p-1.5 gap-1.5 no-print">
+                                             <button type="button" id="upload-tab-btn" onclick="switchSubmitTab('upload')" class="flex-1 py-2 text-xs font-bold text-center rounded-md bg-[#800000] text-white shadow-sm transition">
+                                                 <i class="fas fa-file-upload mr-1"></i> Upload File
+                                             </button>
+                                             <button type="button" id="scan-tab-btn" onclick="switchSubmitTab('scan')" class="flex-1 py-2 text-xs font-bold text-center rounded-md hover:bg-gray-100 text-gray-600 transition">
+                                                 <i class="fas fa-camera mr-1"></i> Scan Document
+                                             </button>
+                                         </div>
 
-                                        <!-- Tab Header -->
-                                        <div class="border-b border-gray-200 mb-6">
-                                            <nav class="-mb-px flex space-x-6" aria-label="Tabs">
-                                                <button type="button" onclick="switchTab(event, 'upload')" id="upload-tab-btn" class="tab-btn pb-4 px-1 border-b-2 border-[#800000] font-bold text-sm text-[#800000] flex items-center gap-2 transition-all">
-                                                    <i class="fas fa-cloud-upload-alt"></i> Upload File
-                                                </button>
-                                                <button type="button" onclick="switchTab(event, 'scanner')" id="scanner-tab-btn" class="tab-btn pb-4 px-1 border-b-2 border-transparent font-medium text-sm text-gray-500 hover:text-gray-700 hover:border-gray-300 flex items-center gap-2 transition-all">
-                                                    <i class="fas fa-camera"></i> Scan Document
-                                                </button>
-                                            </nav>
-                                        </div>
+                                         <!-- Upload Tab Content -->
+                                         <div id="upload-tab" class="tab-content block">
+                                             <div id="dropzone" class="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:border-[#800000] hover:bg-red-50/10 transition-all cursor-pointer relative group shadow-sm bg-gray-50/50">
+                                                 <input type="file" name="document_file" id="document_file" class="hidden">
+                                                 
+                                                 <div id="dropzone-prompt" class="space-y-4">
+                                                     <div class="w-14 h-14 mx-auto bg-red-50 text-[#800000] rounded-full flex items-center justify-center group-hover:scale-110 transition-transform shadow-inner">
+                                                         <i class="fas fa-cloud-upload-alt text-xl"></i>
+                                                     </div>
+                                                     <div>
+                                                         <p class="text-sm font-bold text-gray-700">Drag & drop your file here, or <span class="text-[#800000] hover:underline font-extrabold">browse</span></p>
+                                                         <p class="text-[11px] text-gray-400 mt-1">Accepts PDF, DOCX, XLSX, JPG, PNG up to 10MB</p>
+                                                     </div>
+                                                 </div>
 
-                                        <!-- Upload Tab Content -->
-                                        <div id="upload-tab" class="tab-content block">
-                                            <div id="dropzone" class="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:border-[#800000] hover:bg-red-50/10 transition-all cursor-pointer relative group shadow-sm bg-gray-50/50">
-                                                <input type="file" name="document_file" id="document_file" class="hidden">
-                                                
-                                                <div id="dropzone-prompt" class="space-y-4">
-                                                    <div class="w-14 h-14 mx-auto bg-red-50 text-[#800000] rounded-full flex items-center justify-center group-hover:scale-110 transition-transform shadow-inner">
-                                                        <i class="fas fa-cloud-upload-alt text-xl"></i>
-                                                    </div>
-                                                    <div>
-                                                        <p class="text-sm font-bold text-gray-700">Drag & drop your file here, or <span class="text-[#800000] hover:underline font-extrabold">browse</span></p>
-                                                        <p class="text-[11px] text-gray-400 mt-1">Accepts PDF, DOCX, XLSX, JPG, PNG up to 10MB</p>
-                                                    </div>
-                                                </div>
+                                                 <!-- Selected File Indicator -->
+                                                 <div id="file-staged-container" class="hidden p-4 bg-green-50 border border-green-200 rounded-lg flex items-center justify-between shadow-sm">
+                                                     <div class="flex items-center gap-3 text-green-700 min-w-0">
+                                                         <div class="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
+                                                             <i class="fas fa-file-alt text-green-600"></i>
+                                                         </div>
+                                                         <div class="text-left min-w-0">
+                                                             <p id="staged-file-name" class="text-xs font-bold truncate text-green-800">filename.pdf</p>
+                                                             <p class="text-[10px] text-green-600 font-semibold">File staged successfully</p>
+                                                         </div>
+                                                     </div>
+                                                     <button type="button" id="remove-file-btn" class="text-gray-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition-colors" title="Clear selection">
+                                                         <i class="fas fa-times-circle text-lg"></i>
+                                                     </button>
+                                                 </div>
+                                             </div>
+                                             <div id="fileError" class="mt-3 text-xs text-red-600 font-bold bg-red-50 border border-red-100 p-2.5 rounded-lg hidden flex items-center gap-1.5">
+                                                 <i class="fas fa-exclamation-circle text-sm flex-shrink-0"></i>
+                                                 <span id="file-error-text">Error message</span>
+                                             </div>
+                                         </div>
 
-                                                <!-- Selected File Indicator -->
-                                                <div id="file-staged-container" class="hidden p-4 bg-green-50 border border-green-200 rounded-lg flex items-center justify-between shadow-sm">
-                                                    <div class="flex items-center gap-3 text-green-700 min-w-0">
-                                                        <div class="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
-                                                            <i class="fas fa-file-alt text-green-600"></i>
-                                                        </div>
-                                                        <div class="text-left min-w-0">
-                                                            <p id="staged-file-name" class="text-xs font-bold truncate text-green-800">filename.pdf</p>
-                                                            <p class="text-[10px] text-green-600 font-semibold">File staged successfully</p>
-                                                        </div>
-                                                    </div>
-                                                    <button type="button" id="remove-file-btn" class="text-gray-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition-colors" title="Clear selection">
-                                                        <i class="fas fa-times-circle text-lg"></i>
-                                                    </button>
-                                                </div>
-                                            </div>
-                                            <div id="fileError" class="mt-3 text-xs text-red-600 font-bold bg-red-50 border border-red-100 p-2.5 rounded-lg hidden flex items-center gap-1.5">
-                                                <i class="fas fa-exclamation-circle text-sm flex-shrink-0"></i>
-                                                <span id="file-error-text">Error message</span>
-                                            </div>
-                                        </div>
-
-                                        <!-- Scanner Tab Content -->
-                                        <div id="scanner-tab" class="tab-content hidden">
-                                            <div class="border border-gray-200 rounded-xl p-8 text-center bg-gray-50 flex flex-col items-center justify-center space-y-4 shadow-sm">
-                                                <div class="w-14 h-14 bg-red-50 text-[#800000] rounded-full flex items-center justify-center shadow-inner">
-                                                    <i class="fas fa-camera text-xl"></i>
-                                                </div>
-                                                <div class="space-y-1">
-                                                    <h4 class="font-bold text-gray-800 text-sm">Webcam Scanner Ready</h4>
-                                                    <p class="text-[11px] text-gray-400 max-w-sm leading-relaxed">Capture pages with your camera, apply rotation or image contrast filters, and automatically package them as a unified PDF staged for upload.</p>
-                                                </div>
-                                                <button type="button" onclick="openScannerModal()" class="px-5 py-2.5 bg-[#800000] hover:bg-red-950 text-white rounded-lg text-xs font-bold transition shadow-md hover:shadow-lg flex items-center gap-2 transform active:scale-95 duration-150">
-                                                    <i class="fas fa-external-link-alt"></i> Launch Multi-Page Scanner
-                                                </button>
-                                            </div>
-                                        </div>
+                                         <!-- Scan Tab Content -->
+                                         <div id="scan-tab" class="tab-content hidden">
+                                             <div class="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center bg-gray-50/50 flex flex-col items-center justify-center gap-4">
+                                                 <div class="w-14 h-14 bg-red-50 text-[#800000] rounded-full flex items-center justify-center shadow-inner">
+                                                     <i class="fas fa-camera text-xl"></i>
+                                                 </div>
+                                                 <div>
+                                                     <p class="text-sm font-bold text-gray-700">Scan via Webcam / Document Camera</p>
+                                                     <p class="text-[11px] text-gray-400 mt-1">Capture page-by-page, enhance clarity, rotate, and stage directly as PDF.</p>
+                                                 </div>
+                                                 <button type="button" onclick="openScannerModal()" class="px-5 py-2.5 bg-[#800000] hover:bg-red-900 text-white rounded-lg text-xs font-bold transition shadow flex items-center gap-1.5">
+                                                     <i class="fas fa-power-off"></i> Open Scanner
+                                                 </button>
+                                             </div>
+                                         </div>
 
                                         <!-- Action Button -->
                                         <div class="mt-8 border-t border-gray-100 pt-6 flex justify-end">
@@ -594,37 +610,42 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                                             </h3>
                                             <p class="text-xs text-gray-500 mt-1">Review QMO remarks and submission details.</p>
                                         </div>
+                                         <!-- Feedback Callout -->
+                                         <div class="p-4 bg-red-50 border-l-4 border-red-600 rounded-r-lg shadow-sm">
+                                             <p class="text-xs font-bold text-red-800 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                                                 <i class="fas fa-exclamation-circle text-red-600 text-sm"></i> QMO Feedback Remarks
+                                             </p>
+                                             <p class="text-sm text-red-950 font-bold leading-relaxed italic">
+                                                 "<?php echo htmlspecialchars($previous_version['remarks'] ?? 'No feedback remarks provided by reviewer.'); ?>"
+                                             </p>
+                                         </div>
 
-                                        <!-- Feedback Callout -->
-                                        <div class="p-4 bg-amber-50 border-l-4 border-amber-600 rounded-r-lg">
-                                            <p class="text-xs font-bold text-amber-800 uppercase tracking-wider mb-1">QMO Feedback Remarks</p>
-                                            <p class="text-sm text-amber-900 font-medium leading-relaxed italic">
-                                                "<?php echo htmlspecialchars($previous_version['remarks'] ?? 'No feedback remarks provided by reviewer.'); ?>"
-                                            </p>
-                                        </div>
-
-                                        <!-- Clean Details Table -->
-                                        <div class="space-y-3">
-                                            <h4 class="text-xs font-bold text-gray-400 uppercase tracking-wider">File Metadata</h4>
-                                            <div class="grid grid-cols-3 gap-2 text-xs py-2 border-b border-gray-100">
-                                                <span class="text-gray-500 font-medium col-span-1">File Name:</span>
-                                                <span class="text-gray-800 font-bold col-span-2 truncate" title="<?php echo htmlspecialchars($previous_version['file_name']); ?>">
-                                                    <?php echo htmlspecialchars($previous_version['file_name']); ?>
-                                                </span>
-                                            </div>
-                                            <div class="grid grid-cols-3 gap-2 text-xs py-2 border-b border-gray-100">
-                                                <span class="text-gray-500 font-medium col-span-1">Doc Type:</span>
-                                                <span class="text-gray-800 font-bold col-span-2"><?php echo htmlspecialchars($previous_version['doc_code']); ?></span>
-                                            </div>
-                                            <div class="grid grid-cols-3 gap-2 text-xs py-2 border-b border-gray-100">
-                                                <span class="text-gray-500 font-medium col-span-1">Version:</span>
-                                                <span class="text-gray-800 font-bold col-span-2">v<?php echo htmlspecialchars($previous_version['version_number'] ?? 1); ?></span>
-                                            </div>
-                                            <div class="grid grid-cols-3 gap-2 text-xs py-2">
-                                                <span class="text-gray-500 font-medium col-span-1">Period:</span>
-                                                <span class="text-gray-800 font-bold col-span-2">AY <?php echo htmlspecialchars($previous_version['academic_year'] . ' · ' . $previous_version['semester']); ?></span>
-                                            </div>
-                                        </div>
+                                         <!-- Clean Details Table -->
+                                         <div class="space-y-3 bg-gray-50 p-4 rounded-xl border border-gray-150">
+                                             <h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Previous Version Metadata</h4>
+                                             <div class="grid grid-cols-3 gap-2 text-xs py-2 border-b border-gray-200">
+                                                 <span class="text-gray-500 font-medium col-span-1">File Name:</span>
+                                                 <span class="text-gray-800 font-bold col-span-2 break-all" title="<?php echo htmlspecialchars($previous_version['file_name']); ?>">
+                                                     <?php echo htmlspecialchars($previous_version['file_name']); ?>
+                                                 </span>
+                                             </div>
+                                             <div class="grid grid-cols-3 gap-2 text-xs py-2 border-b border-gray-200">
+                                                 <span class="text-gray-500 font-medium col-span-1">Doc Type:</span>
+                                                 <span class="text-gray-800 font-extrabold col-span-2 text-[#800000] bg-red-50 border border-red-100 px-2 py-0.5 rounded inline-block w-fit">
+                                                     <?php echo htmlspecialchars(($previous_version['description'] ?? 'Document') . ' (' . $previous_version['doc_code'] . ')'); ?>
+                                                 </span>
+                                             </div>
+                                             <div class="grid grid-cols-3 gap-2 text-xs py-2 border-b border-gray-200">
+                                                 <span class="text-gray-500 font-medium col-span-1">Version:</span>
+                                                 <span class="text-amber-800 font-extrabold col-span-2 bg-amber-50 border border-amber-200 px-2.5 py-0.5 rounded inline-block w-fit shadow-inner">
+                                                     Version <?php echo htmlspecialchars($previous_version['version_number'] ?? 1); ?>
+                                                 </span>
+                                             </div>
+                                             <div class="grid grid-cols-3 gap-2 text-xs py-2">
+                                                 <span class="text-gray-500 font-medium col-span-1">Period:</span>
+                                                 <span class="text-gray-800 font-bold col-span-2">AY <?php echo htmlspecialchars($previous_version['academic_year'] . ' · ' . $previous_version['semester']); ?></span>
+                                             </div>
+                                         </div>
                                     </div>
 
                                     <!-- Guidelines Tip Box -->
@@ -731,8 +752,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         });
 
         // Drag and Drop implementation
-        const dropzone = document.getElementById('dropzone');
-        const fileInput = document.getElementById('document_file');
+        var dropzone = dropzone || document.getElementById('dropzone');
+        var fileInput = fileInput || document.getElementById('document_file');
         
         if (dropzone && fileInput) {
             // Click to browse
@@ -785,7 +806,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         }
 
         // Scanner functions (Backward Compatible)
-        let stream = null;
+        var stream = stream || null;
         async function startScanner() {
             try {
                 stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
@@ -847,7 +868,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         }
 
         // Display office info if available
-        const officeId = <?php echo json_encode($office_id); ?>;
+        var officeId = officeId || <?php echo json_encode($office_id); ?>;
         if (officeId) {
             const officeInfo = document.getElementById('officeInfo');
             if (officeInfo) officeInfo.style.display = 'flex';
@@ -855,8 +876,41 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             if (officeDisplay) officeDisplay.textContent = 'Office ID: ' + officeId;
         }
 
+        function switchSubmitTab(tab) {
+            const uploadTab = document.getElementById('upload-tab');
+            const scanTab = document.getElementById('scan-tab');
+            const uploadBtn = document.getElementById('upload-tab-btn');
+            const scanBtn = document.getElementById('scan-tab-btn');
+            
+            if (tab === 'upload') {
+                if (uploadTab) uploadTab.classList.replace('hidden', 'block');
+                if (scanTab) scanTab.classList.replace('block', 'hidden');
+                
+                if (uploadBtn) {
+                    uploadBtn.classList.add('bg-[#800000]', 'text-white', 'shadow-sm');
+                    uploadBtn.classList.remove('hover:bg-gray-100', 'text-gray-600');
+                }
+                if (scanBtn) {
+                    scanBtn.classList.remove('bg-[#800000]', 'text-white', 'shadow-sm');
+                    scanBtn.classList.add('hover:bg-gray-100', 'text-gray-600');
+                }
+            } else if (tab === 'scan') {
+                if (uploadTab) uploadTab.classList.replace('block', 'hidden');
+                if (scanTab) scanTab.classList.replace('hidden', 'block');
+                
+                if (scanBtn) {
+                    scanBtn.classList.add('bg-[#800000]', 'text-white', 'shadow-sm');
+                    scanBtn.classList.remove('hover:bg-gray-100', 'text-gray-600');
+                }
+                if (uploadBtn) {
+                    uploadBtn.classList.remove('bg-[#800000]', 'text-white', 'shadow-sm');
+                    uploadBtn.classList.add('hover:bg-gray-100', 'text-gray-600');
+                }
+            }
+        }
+
         // Prevent double submission
-        let isSubmitting = false;
+        var isSubmitting = isSubmitting || false;
         function preventDoubleSubmit() {
             if (isSubmitting) return false;
             isSubmitting = true;
@@ -879,8 +933,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         function closeSuccessModal() {
             const modal = document.getElementById('successModal');
             modal.style.display = 'none';
-            // Reset form after closing modal
-            document.getElementById('submissionForm').reset();
+            // Redirect to my submissions page
+            window.location.href = 'my_submissions.php';
         }
 
         // Close modal when clicking outside
@@ -891,32 +945,59 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             }
         });
 
-        // Profile Dropdown Toggle
-        const profileBtn = document.getElementById('profile-btn');
-        const profileDropdown = document.getElementById('profile-dropdown');
-        
-        if (profileBtn && profileDropdown) {
-            profileBtn.addEventListener('click', function() {
-                profileDropdown.classList.toggle('active');
-            });
+        // --- FLOATING MULTI-PAGE SCANNER MODULE ---
+        var modalStream = modalStream || null;
+        var pages = pages || [];
+        var pageCounter = pageCounter || 0;
+
+        function generateAutoFilename() {
+            const officeCode = window.CURRENT_OFFICE_CODE || '';
+            const activeYear = (window.ACTIVE_YEAR || '').replace(/[^A-Za-z0-9_-]/g, '_');
+            const activeSem = (window.ACTIVE_SEMESTER || '').replace(/[^A-Za-z0-9_-]/g, '_');
             
-            // Close dropdown when clicking outside
-            document.addEventListener('click', function(event) {
-                if (!event.target.closest('#profile-btn') && !event.target.closest('#profile-dropdown')) {
-                    profileDropdown.classList.remove('active');
+            let baseName = '';
+            
+            // Check if it is a revision submission (Comparison Mode)
+            if (window.PREVIOUS_VERSION) {
+                const docCode = window.PREVIOUS_VERSION.doc_code || '';
+                const nextVer = parseInt(window.PREVIOUS_VERSION.version_number || 1) + 1;
+                baseName = `${officeCode}_${docCode}_${activeYear}_${activeSem}_v${nextVer}`;
+            } else {
+                // For new submission, check what document type is selected
+                const docTypeSelect = document.getElementById('doc_type_id');
+                if (docTypeSelect && docTypeSelect.value) {
+                    const selectedOptionText = docTypeSelect.options[docTypeSelect.selectedIndex].text;
+                    const docCode = selectedOptionText.split(' ')[0] || '';
+                    baseName = `${officeCode}_${docCode}_${activeYear}_${activeSem}`;
+                } else {
+                    baseName = 'Scanned_Doc_' + Math.floor(Date.now() / 1000);
                 }
-            });
+            }
+            
+            // Deduplicate (check if this name is already staged in the files list)
+            let finalName = baseName;
+            const fileInput = document.getElementById('document_file');
+            if (fileInput && fileInput.files && fileInput.files.length > 0) {
+                const existingName = fileInput.files[0].name.replace('.pdf', '');
+                if (existingName === finalName) {
+                    finalName += '_' + Math.floor(Math.random() * 1000);
+                }
+            }
+            return finalName;
         }
 
-        // --- FLOATING MULTI-PAGE SCANNER MODULE ---
-        let modalStream = null;
-        let pages = [];
-        let pageCounter = 0;
+        // Auto update filename when Document Type selector changes
+        document.getElementById('doc_type_id')?.addEventListener('change', () => {
+            const nameInput = document.getElementById('scan-doc-name');
+            if (nameInput) {
+                nameInput.value = generateAutoFilename();
+            }
+        });
 
         function openScannerModal() {
             pages = [];
             pageCounter = 0;
-            document.getElementById('scan-doc-name').value = 'Scanned_Doc_' + Math.floor(Date.now() / 1000);
+            document.getElementById('scan-doc-name').value = generateAutoFilename();
             updatePageCount();
             renderGallery();
             
@@ -990,7 +1071,15 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             canvas.height = video.videoHeight;
             
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+            
+            // Auto detect borders and warp to landscape rectangular sheet
+            const corners = ScannerProcessor.detectDocumentCorners(canvas);
+            const warpedCanvas = document.createElement('canvas');
+            warpedCanvas.width = 1200;
+            warpedCanvas.height = 848;
+            ScannerProcessor.warpDocument(canvas, warpedCanvas, corners);
+            
+            const dataUrl = warpedCanvas.toDataURL('image/jpeg', 0.9);
             
             pageCounter++;
             pages.push({
@@ -1080,19 +1169,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     ctx.restore();
                     
                     if (page.enhanced) {
-                        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                        const data = imgData.data;
-                        for (let i = 0; i < data.length; i += 4) {
-                            const r = data[i];
-                            const g = data[i+1];
-                            const b = data[i+2];
-                            let v = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-                            v = v > 120 ? 255 : v * 0.5;
-                            data[i] = v;
-                            data[i+1] = v;
-                            data[i+2] = v;
-                        }
-                        ctx.putImageData(imgData, 0, 0);
+                        ScannerProcessor.applySmartEnhancement(canvas);
                     }
                     resolve();
                 };
@@ -1120,7 +1197,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 const item = document.createElement('div');
                 item.className = "flex items-center gap-3 p-3 bg-gray-50 border border-gray-200 rounded-lg group";
                 item.innerHTML = `
-                    <div class="w-14 h-18 bg-black rounded overflow-hidden flex items-center justify-center border border-gray-300 flex-shrink-0">
+                    <div class="w-18 h-14 bg-black rounded overflow-hidden flex items-center justify-center border border-gray-300 flex-shrink-0">
                         <canvas id="thumb-canvas-${p.id}" class="w-full h-full object-contain"></canvas>
                     </div>
                     <div class="flex-1 min-w-0">
@@ -1157,7 +1234,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             
             try {
                 const { jsPDF } = window.jspdf;
-                const doc = new jsPDF('p', 'mm', 'a4');
+                const doc = new jsPDF('l', 'mm', 'a4');
                 const pdfWidth = doc.internal.pageSize.getWidth();
                 const pdfHeight = doc.internal.pageSize.getHeight();
                 
@@ -1216,87 +1293,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         <span class="absolute right-16 bg-gray-900 text-white text-xs px-2.5 py-1.5 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none whitespace-nowrap font-medium">Multi-Page Scanner</span>
     </button>
 
-    <!-- Modern Scanner Modal Overlay -->
-    <div id="scannerModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center z-50 p-4 md:p-6 backdrop-blur-sm">
-        <div class="bg-white rounded-xl shadow-2xl max-w-4xl w-full h-[85vh] flex flex-col overflow-hidden" style="animation: slideUp 0.3s ease-out;">
-            <!-- Modal Header -->
-            <div class="px-6 py-4 border-b border-gray-200 bg-gray-50 flex items-center justify-between flex-shrink-0">
-                <div class="flex items-center gap-3">
-                    <div class="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center text-[#800000] text-lg">
-                        <i class="fas fa-print"></i>
-                    </div>
-                    <div>
-                        <h3 class="font-bold text-gray-900">Multi-Page Document Scanner</h3>
-                        <p class="text-xs text-gray-500">Scan multiple pages, apply rotation/contrast, and bundle as PDF</p>
-                    </div>
-                </div>
-                <button onclick="closeScannerModal()" class="text-gray-400 hover:text-gray-600 focus:outline-none p-1.5 rounded-lg hover:bg-gray-100 transition-colors">
-                    <i class="fas fa-times text-xl"></i>
-                </button>
-            </div>
-            
-            <!-- Modal Body -->
-            <div class="flex-1 min-h-0 flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-gray-200">
-                <!-- Camera Capture Area -->
-                <div class="flex-1 p-6 flex flex-col justify-between min-h-0 bg-gray-900 text-white relative">
-                    <div class="flex-1 flex items-center justify-center bg-black/40 rounded-lg overflow-hidden relative" id="scanner-viewfinder">
-                        <video id="modal-video" autoplay playsinline muted class="w-full h-full object-contain hidden"></video>
-                        <div id="scanner-helper" class="absolute inset-8 border-2 border-dashed border-white/50 rounded-lg pointer-events-none flex items-center justify-center hidden">
-                            <span class="text-xs text-white/50 bg-black/60 px-3 py-1 rounded-full uppercase tracking-wider font-semibold">Align Document Here</span>
-                        </div>
-                        <div id="camera-standby" class="flex flex-col items-center gap-3">
-                            <i class="fas fa-video-slash text-4xl text-gray-500"></i>
-                            <p class="text-sm text-gray-400 font-medium">Camera is offline</p>
-                            <button onclick="startModalCamera()" class="px-4 py-2 bg-[#800000] hover:bg-red-900 text-white rounded-lg text-xs font-bold transition shadow-md flex items-center gap-1.5">
-                                <i class="fas fa-power-off"></i> Turn Camera On
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <div class="mt-4 flex gap-3 justify-center">
-                        <button type="button" id="modal-capture-btn" onclick="capturePage()" class="px-6 py-3 bg-[#800000] hover:bg-red-900 text-white rounded-xl text-sm font-bold transition shadow-lg flex items-center gap-2" disabled>
-                            <i class="fas fa-camera text-base"></i> Capture Page
-                        </button>
-                    </div>
-                </div>
-                
-                <!-- Staged Pages Area -->
-                <div class="w-full md:w-96 p-6 flex flex-col justify-between bg-white min-h-0">
-                    <div class="flex-1 flex flex-col min-h-0">
-                        <div class="flex items-center justify-between mb-4 flex-shrink-0">
-                            <span class="text-xs font-bold text-gray-500 uppercase tracking-wider">Scanned Pages</span>
-                            <span id="page-count" class="bg-gray-100 text-gray-800 text-xs px-2.5 py-1 rounded-full font-bold">0 Pages</span>
-                        </div>
-                        
-                        <div id="pages-gallery" class="flex-1 overflow-y-auto space-y-3 pr-1 min-h-0">
-                            <div class="h-full flex flex-col items-center justify-center text-gray-400 py-12">
-                                <i class="fas fa-file-invoice text-3xl mb-2 text-gray-300"></i>
-                                <p class="text-xs text-center">No pages scanned yet.<br>Click "Capture Page" to start adding pages.</p>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="mt-6 border-t border-gray-100 pt-4 flex-shrink-0 space-y-4">
-                        <div>
-                             <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Save Scanned Document As</label>
-                             <div class="relative">
-                                 <input type="text" id="scan-doc-name" placeholder="e.g. QOP_UnitReport" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#800000] focus:border-transparent">
-                                 <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-gray-400 pointer-events-none">.pdf</span>
-                             </div>
-                        </div>
-                        
-                        <button type="button" onclick="stageAndSaveScan()" id="save-scan-btn" class="w-full py-3 bg-[#800000] hover:bg-red-900 text-white rounded-lg text-sm font-bold transition shadow-lg flex items-center justify-center gap-2" disabled>
-                            <i class="fas fa-file-pdf"></i> Compile PDF & Stage
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
     <canvas id="enhance-canvas" class="hidden"></canvas>
 
-    <!-- Success Modal -->
     <div id="successModal">
         <div class="modal-content">
             <div class="modal-icon">
@@ -1307,9 +1305,81 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             <button class="modal-button" onclick="closeSuccessModal()">OK</button>
         </div>
     </div>
+
+    <!-- Modern Scanner Modal Overlay (Moved outside main to cover sidebar) -->
+    <div id="scannerModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center z-[9999] p-4 md:p-6 backdrop-blur-sm">
+        <div class="bg-white rounded-xl shadow-2xl max-w-4xl w-full h-[90vh] md:h-[85vh] flex flex-col overflow-hidden animate-slide-up">
+            <!-- Modal Header -->
+            <div class="px-6 py-4 bg-[#800000] text-white flex items-center justify-between flex-shrink-0">
+                <div class="flex items-center gap-3">
+                    <i class="fas fa-print text-lg"></i>
+                    <div>
+                        <h3 class="font-bold text-sm md:text-base">Multi-Page Document Scanner</h3>
+                        <p class="text-[10px] md:text-xs text-red-200">Scan multiple pages, apply rotation/contrast, and bundle as PDF</p>
+                    </div>
+                </div>
+                <button onclick="closeScannerModal()" class="text-white hover:text-gray-200 focus:outline-none p-1.5 rounded-lg hover:bg-red-900 transition-colors">
+                    <i class="fas fa-times text-xl"></i>
+                </button>
+            </div>
+            
+            <!-- Modal Body -->
+            <div class="flex-1 min-h-0 flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-gray-200 overflow-y-auto md:overflow-hidden">
+                <!-- Camera Capture Area -->
+                <div class="w-full md:flex-1 h-[260px] md:h-auto p-4 md:p-6 flex flex-col bg-gray-900 text-white relative flex-shrink-0">
+                    <div class="flex-1 flex items-center justify-center bg-black/40 rounded-lg overflow-hidden relative" id="scanner-viewfinder">
+                        <video id="modal-video" autoplay playsinline muted class="w-full h-full object-contain hidden"></video>
+                        <div id="scanner-helper" class="absolute inset-8 border-2 border-dashed border-white/50 rounded-lg pointer-events-none flex items-center justify-center hidden">
+                            <span class="text-xs text-white/50 bg-black/60 px-3 py-1 rounded-full uppercase tracking-wider font-semibold">Align Document Here</span>
+                        </div>
+                        <div id="camera-standby" class="flex flex-col items-center gap-3">
+                            <i class="fas fa-video-slash text-2xl md:text-4xl text-gray-500"></i>
+                            <p class="text-xs md:text-sm text-gray-400 font-medium">Camera is offline</p>
+                            <button onclick="startModalCamera()" class="px-3 py-1.5 bg-[#800000] hover:bg-red-900 text-white rounded-lg text-[10px] md:text-xs font-bold transition shadow-md flex items-center gap-1.5">
+                                <i class="fas fa-power-off"></i> Turn Camera On
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-3 flex justify-center flex-shrink-0">
+                        <button type="button" id="modal-capture-btn" onclick="capturePage()" class="px-5 py-2.5 bg-[#800000] hover:bg-red-900 text-white rounded-xl text-xs font-bold transition shadow-lg flex items-center gap-2" disabled>
+                            <i class="fas fa-camera text-sm"></i> Capture Page
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Staged Pages Area -->
+                <div class="w-full md:w-96 p-4 md:p-6 flex flex-col justify-between bg-white min-h-0 flex-shrink-0 md:flex-shrink md:overflow-hidden">
+                    <div class="flex-shrink-0 flex flex-col min-h-0 md:flex-1 md:overflow-hidden">
+                        <div class="flex items-center justify-between mb-3 flex-shrink-0">
+                            <span class="text-[10px] md:text-xs font-bold text-gray-500 uppercase tracking-wider">Scanned Pages</span>
+                            <span id="page-count" class="bg-gray-100 text-gray-800 text-xs px-2.5 py-1 rounded-full font-bold">0 Pages</span>
+                        </div>
+                        
+                        <div id="pages-gallery" class="w-full h-40 md:h-auto md:flex-1 overflow-y-auto space-y-2 pr-1 border border-gray-100 rounded-lg p-2 bg-gray-50/50">
+                            <div class="h-full flex flex-col items-center justify-center text-gray-400 py-12">
+                                <i class="fas fa-file-invoice text-3xl mb-2 text-gray-300"></i>
+                                <p class="text-xs text-center">No pages scanned yet.<br>Click "Capture Page" to start adding pages.</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-3 border-t border-gray-100 pt-3 flex-shrink-0 space-y-3 font-sans">
+                        <div>
+                             <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1.5">Save Scanned Document As</label>
+                             <div class="relative">
+                                 <input type="text" id="scan-doc-name" placeholder="e.g. QOP_UnitReport" class="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs outline-none focus:ring-1 focus:ring-[#800000] focus:border-transparent">
+                                 <span class="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-gray-400 pointer-events-none">.pdf</span>
+                             </div>
+                        </div>
+                        
+                        <button type="button" onclick="stageAndSaveScan()" id="save-scan-btn" class="w-full py-2 bg-[#800000] hover:bg-red-900 text-white rounded-lg text-xs font-bold transition shadow-lg flex items-center justify-center gap-2" disabled>
+                            <i class="fas fa-file-pdf"></i> Compile PDF & Stage
+                        </button>
+                    </div>
                 </div>
             </div>
-        </main>
+        </div>
     </div>
 </body>
 </html>
