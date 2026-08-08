@@ -339,6 +339,15 @@ $stmt_queue->execute();
 $result_queue = $stmt_queue->get_result();
 $queue_count = $result_queue->num_rows;
 
+// Fetch active offices for Unit/Department filter
+$all_offices_res = $conn->query("SELECT office_id, office_name, office_code FROM offices WHERE status = 'Active' AND is_archived = FALSE ORDER BY office_name ASC");
+$all_offices = [];
+if ($all_offices_res) {
+    while ($off_row = $all_offices_res->fetch_assoc()) {
+        $all_offices[] = $off_row;
+    }
+}
+
 $submission_stats = [
     'total' => 0,
     'pending' => 0,
@@ -621,11 +630,21 @@ $has_selected_id = isset($_GET['id']);
                     <!-- Queue Category Tabs -->
                     <div class="flex border-b border-gray-200 bg-gray-50 flex-shrink-0" id="reviewQueueTabs">
                         <button type="button" id="tab-new-btn" onclick="switchQueueTab('new')" class="flex-1 py-2.5 text-xs font-bold text-center border-b-2 border-[#800000] text-[#800000] hover:bg-gray-100 transition focus:outline-none flex items-center justify-center gap-1.5">
-                            <i class="fas fa-plus-circle text-blue-600"></i> New (<?php echo count($new_submissions); ?>)
+                            <i class="fas fa-plus-circle text-blue-600"></i> New Submissions (<?php echo count($new_submissions); ?>)
                         </button>
                         <button type="button" id="tab-rev-btn" onclick="switchQueueTab('rev')" class="flex-1 py-2.5 text-xs font-bold text-center border-b-2 border-transparent text-gray-500 hover:text-[#800000] hover:bg-gray-100 transition focus:outline-none flex items-center justify-center gap-1.5">
                             <i class="fas fa-undo-alt text-amber-600"></i> Revisions (<?php echo count($revision_submissions); ?>)
                         </button>
+                    </div>
+
+                    <!-- Unit/Department Filter Dropdown -->
+                    <div class="p-2.5 border-b border-gray-200 bg-gray-50/80 flex-shrink-0" id="reviewQueueUnitFilterBox">
+                        <select id="reviewQueueUnitFilter" onchange="filterReviewQueueByUnit(this.value)" class="w-full text-xs font-semibold bg-white border border-gray-300 text-gray-700 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-[#800000] focus:border-[#800000] shadow-sm">
+                            <option value="all">All Units / Departments</option>
+                            <?php foreach ($all_offices as $off): ?>
+                                <option value="<?php echo htmlspecialchars($off['office_name']); ?>"><?php echo htmlspecialchars($off['office_name'] . ($off['office_code'] ? ' (' . $off['office_code'] . ')' : '')); ?></option>
+                            <?php endforeach; ?>
+                        </select>
                     </div>
                     
                     <div class="flex-1 overflow-y-auto" id="reviewQueueContainer">
@@ -639,12 +658,12 @@ $has_selected_id = isset($_GET['id']);
                             <!-- Section 1: New Submissions -->
                             <div id="queue-section-new" class="p-3">
                                 <div class="space-y-2">
-                                    <?php if (empty($new_submissions)): ?>
-                                        <p class="text-xs text-gray-400 text-center py-4 bg-white border border-gray-200 rounded-lg">No new submissions.</p>
-                                    <?php else: ?>
+                                    <p id="empty-new-msg" class="text-xs text-gray-400 text-center py-4 bg-white border border-gray-200 rounded-lg <?php echo empty($new_submissions) ? '' : 'hidden'; ?>">No new submissions.</p>
+                                    <?php if (!empty($new_submissions)): ?>
                                         <?php foreach ($new_submissions as $row): ?>
                                             <a href="review_submissions.php?id=<?php echo $row['document_id']; ?>" 
-                                               class="block p-3 bg-white border border-gray-200 rounded-lg hover:border-[#800000] hover:shadow-sm transition cursor-pointer <?php echo ($selected_doc && $selected_doc['document_id'] == $row['document_id']) ? 'ring-2 ring-[#800000] border-transparent' : ''; ?>">
+                                               data-office="<?php echo htmlspecialchars($row['office_name']); ?>"
+                                               class="queue-item-card block p-3 bg-white border border-gray-200 rounded-lg hover:border-[#800000] hover:shadow-sm transition cursor-pointer <?php echo ($selected_doc && $selected_doc['document_id'] == $row['document_id']) ? 'ring-2 ring-[#800000] border-transparent' : ''; ?>">
                                                 <div class="flex justify-between items-start gap-3 mb-2">
                                                     <span class="text-[10px] font-bold text-gray-700 uppercase tracking-wider bg-gray-100 px-2 py-0.5 rounded border border-gray-250 leading-relaxed"><?php echo htmlspecialchars(($row['doc_type_desc'] ?? 'Document') . ' (' . $row['doc_code'] . ')'); ?></span>
                                                     <span class="text-[9px] text-gray-400 flex-shrink-0 mt-0.5"><?php echo date('M d, g:i A', strtotime($row['submitted_at'])); ?></span>
@@ -659,12 +678,12 @@ $has_selected_id = isset($_GET['id']);
                             <!-- Section 2: Revisions & Resubmissions -->
                             <div id="queue-section-rev" class="p-3 hidden">
                                 <div class="space-y-2">
-                                    <?php if (empty($revision_submissions)): ?>
-                                        <p class="text-xs text-gray-400 text-center py-4 bg-white border border-gray-250 rounded-lg">No active revisions.</p>
-                                    <?php else: ?>
+                                    <p id="empty-rev-msg" class="text-xs text-gray-400 text-center py-4 bg-white border border-gray-250 rounded-lg <?php echo empty($revision_submissions) ? '' : 'hidden'; ?>">No active revisions.</p>
+                                    <?php if (!empty($revision_submissions)): ?>
                                         <?php foreach ($revision_submissions as $row): ?>
                                             <a href="review_submissions.php?id=<?php echo $row['document_id']; ?>" 
-                                               class="block p-3 bg-white border border-gray-200 rounded-lg hover:border-[#800000] hover:shadow-sm transition cursor-pointer <?php echo ($selected_doc && $selected_doc['document_id'] == $row['document_id']) ? 'ring-2 ring-[#800000] border-transparent' : ''; ?>">
+                                               data-office="<?php echo htmlspecialchars($row['office_name']); ?>"
+                                               class="queue-item-card block p-3 bg-white border border-gray-200 rounded-lg hover:border-[#800000] hover:shadow-sm transition cursor-pointer <?php echo ($selected_doc && $selected_doc['document_id'] == $row['document_id']) ? 'ring-2 ring-[#800000] border-transparent' : ''; ?>">
                                                 <div class="flex justify-between items-start gap-3 mb-2">
                                                     <span class="text-[10px] font-bold text-gray-700 uppercase tracking-wider bg-gray-100 px-2 py-0.5 rounded border border-gray-250 leading-relaxed"><?php echo htmlspecialchars(($row['doc_type_desc'] ?? 'Document') . ' (' . $row['doc_code'] . ')'); ?></span>
                                                     <span class="text-[9px] text-gray-400 flex-shrink-0 mt-0.5"><?php echo date('M d, g:i A', strtotime($row['submitted_at'])); ?></span>
@@ -674,7 +693,7 @@ $has_selected_id = isset($_GET['id']);
                                                     <?php if ($row['status'] === 'Revision'): ?>
                                                         <span class="bg-red-100 text-[#800000] border border-red-300 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 shadow-sm"><i class="fas fa-undo-alt text-[8px]"></i> Returned</span>
                                                     <?php else: ?>
-                                                        <span class="bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 shadow-sm"><i class="fas fa-code-branch text-[8px]"></i> V<?php echo $row['version_number']; ?></span>
+                                                        <span class="bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 shadow-sm"><i class="fas fa-code-branch text-[8px]"></i> Rev <?php echo $row['version_number']; ?></span>
                                                     <?php endif; ?>
                                                 </div>
                                             </a>
@@ -724,7 +743,7 @@ $has_selected_id = isset($_GET['id']);
                                             <i data-lucide="file-text" class="w-6 h-6"></i>
                                         </div>
                                         <div class="flex-1 min-w-0">
-                                            <p class="text-sm font-bold text-gray-900 truncate"><?php echo htmlspecialchars($selected_doc['file_name']); ?> <?php if(isset($selected_doc['version_number']) && $selected_doc['version_number'] > 1) echo '<span class="bg-[#800000] text-white text-[10px] font-bold px-2 py-0.5 rounded-md ml-2 shadow-sm border border-red-900"><i class="fas fa-code-branch mr-1"></i>Version '.$selected_doc['version_number'].'</span>'; ?></p>
+                                            <p class="text-sm font-bold text-gray-900 truncate"><?php echo htmlspecialchars($selected_doc['file_name']); ?> <?php if(isset($selected_doc['version_number']) && $selected_doc['version_number'] > 1) echo '<span class="bg-[#800000] text-white text-[10px] font-bold px-2 py-0.5 rounded-md ml-2 shadow-sm border border-red-900"><i class="fas fa-code-branch mr-1"></i>Revision '.$selected_doc['version_number'].'</span>'; ?></p>
                                             <p class="text-xs text-gray-500">Click to preview document</p>
                                         </div>
                                         <div class="flex flex-col sm:flex-row gap-2">
@@ -739,14 +758,14 @@ $has_selected_id = isset($_GET['id']);
                                 <!-- Version History Timeline -->
                                 <div class="bg-white rounded-xl border border-gray-200 p-6">
                                     <h4 class="text-xs font-bold text-gray-500 uppercase mb-4 flex items-center gap-2">
-                                        <i class="fas fa-history text-[#800000]"></i> Submission Version History
+                                        <i class="fas fa-history text-[#800000]"></i> Submission Revision History
                                     </h4>
                                     <div class="space-y-4">
                                         <?php foreach ($versions_list as $ver): ?>
                                             <div class="flex items-start gap-4 p-3.5 bg-gray-50/50 hover:bg-gray-50 border border-gray-150 rounded-xl transition">
-                                                <!-- Version indicator badge -->
+                                                <!-- Revision indicator badge -->
                                                 <div class="flex-shrink-0 flex flex-col items-center justify-center w-12 h-12 rounded-lg <?php echo ($selected_doc['document_id'] == $ver['document_id']) ? 'bg-red-50 text-[#800000] border border-red-200' : 'bg-gray-100 text-gray-500 border border-gray-200'; ?> font-bold shadow-sm">
-                                                    <span class="text-[10px] uppercase text-gray-400 font-bold leading-none">Ver</span>
+                                                    <span class="text-[10px] uppercase text-gray-400 font-bold leading-none">Rev</span>
                                                     <span class="text-lg leading-none mt-0.5"><?php echo (int)($ver['version_number'] ?: 1); ?></span>
                                                 </div>
                                                 
@@ -779,7 +798,7 @@ $has_selected_id = isset($_GET['id']);
                                                 
                                                 <div class="flex-shrink-0">
                                                     <button onclick="openFileViewer('<?php echo htmlspecialchars($ver['file_path']); ?>', '<?php echo htmlspecialchars($ver['file_name']); ?>')" 
-                                                            class="p-2 text-gray-500 hover:text-[#800000] hover:bg-red-50 rounded-lg transition" title="Preview version">
+                                                            class="p-2 text-gray-500 hover:text-[#800000] hover:bg-red-50 rounded-lg transition" title="Preview revision">
                                                         <i class="fas fa-eye text-base"></i>
                                                     </button>
                                                 </div>
@@ -812,7 +831,7 @@ $has_selected_id = isset($_GET['id']);
                                 <?php elseif ($selected_doc['status'] === 'Revision'): ?>
                                 <div class="p-4 bg-red-50 border border-red-200 text-red-800 text-sm font-semibold rounded-xl flex items-center gap-2.5 shadow-sm">
                                     <i class="fas fa-exclamation-triangle text-red-600 text-base"></i>
-                                    <span>This version has already been returned for revisions. You cannot review or approve it until the unit uploads a new version.</span>
+                                    <span>This revision has already been returned for revisions. You cannot review or approve it until the unit uploads a new revision.</span>
                                 </div>
                                 <?php elseif ($selected_doc['status'] === 'Approved'): ?>
                                 <div class="p-4 bg-green-50 border border-green-200 text-green-800 text-sm font-semibold rounded-xl flex items-center gap-2.5 shadow-sm">
@@ -864,6 +883,67 @@ $has_selected_id = isset($_GET['id']);
             }
         }
         
+        function filterReviewQueueByUnit(selectedOffice) {
+            localStorage.setItem('qmo-active-unit-filter', selectedOffice || 'all');
+            const cards = document.querySelectorAll('.queue-item-card');
+            
+            let visibleNewCount = 0;
+            let visibleRevCount = 0;
+
+            cards.forEach(card => {
+                const cardOffice = card.getAttribute('data-office');
+                const match = (!selectedOffice || selectedOffice === 'all' || cardOffice === selectedOffice);
+                
+                if (match) {
+                    card.style.display = 'block';
+                    if (card.closest('#queue-section-new')) visibleNewCount++;
+                    if (card.closest('#queue-section-rev')) visibleRevCount++;
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+
+
+            // Single empty message handling for Section 1 (New Submissions)
+            const emptyNewMsg = document.getElementById('empty-new-msg');
+            if (emptyNewMsg) {
+                if (visibleNewCount === 0) {
+                    emptyNewMsg.innerText = (!selectedOffice || selectedOffice === 'all') 
+                        ? 'No new submissions.' 
+                        : 'No new submissions for selected unit/department.';
+                    emptyNewMsg.classList.remove('hidden');
+                    emptyNewMsg.style.display = 'block';
+                } else {
+                    emptyNewMsg.classList.add('hidden');
+                    emptyNewMsg.style.display = 'none';
+                }
+            }
+
+            // Single empty message handling for Section 2 (Revisions)
+            const emptyRevMsg = document.getElementById('empty-rev-msg');
+            if (emptyRevMsg) {
+                if (visibleRevCount === 0) {
+                    emptyRevMsg.innerText = (!selectedOffice || selectedOffice === 'all') 
+                        ? 'No active revisions.' 
+                        : 'No revision submissions for selected unit/department.';
+                    emptyRevMsg.classList.remove('hidden');
+                    emptyRevMsg.style.display = 'block';
+                } else {
+                    emptyRevMsg.classList.add('hidden');
+                    emptyRevMsg.style.display = 'none';
+                }
+            }
+        }
+
+        function restoreUnitFilterState() {
+            const savedFilter = localStorage.getItem('qmo-active-unit-filter') || 'all';
+            const filterSelect = document.getElementById('reviewQueueUnitFilter');
+            if (filterSelect) {
+                filterSelect.value = savedFilter;
+                filterReviewQueueByUnit(savedFilter);
+            }
+        }
+
         function restoreQueueTabState() {
             const activeTab = localStorage.getItem('qmo-active-queue-tab') || 'new';
             switchQueueTab(activeTab);
@@ -871,6 +951,7 @@ $has_selected_id = isset($_GET['id']);
         
         document.addEventListener('DOMContentLoaded', () => {
             restoreQueueTabState();
+            restoreUnitFilterState();
             if (typeof lucide !== 'undefined') {
                 lucide.createIcons();
             }
@@ -904,6 +985,7 @@ $has_selected_id = isset($_GET['id']);
                 }
                 
                 restoreQueueTabState();
+                restoreUnitFilterState();
                 
                 if (typeof lucide !== 'undefined') {
                     lucide.createIcons();

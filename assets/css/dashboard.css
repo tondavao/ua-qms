@@ -42,7 +42,7 @@ body {
     content: "";
     position: absolute;
     inset: 0;
-    background: url('../img/pat.png') center bottom / cover no-repeat;
+    background: url('../img/man.png') center bottom / cover no-repeat;
     opacity: 0.05;
     pointer-events: none;
     z-index: 0;
@@ -120,7 +120,7 @@ main > header::before {
     content: "";
     position: absolute;
     inset: 0;
-    background: url('../img/pat.png') right center / cover no-repeat;
+    background: url('../img/man.png') right center / cover no-repeat;
     opacity: 0.05;
     pointer-events: none;
     z-index: 0;

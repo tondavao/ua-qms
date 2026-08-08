@@ -110,15 +110,30 @@ $current_page = basename($_SERVER['PHP_SELF']);
     }
     #main-sidebar {
         background-color: #800000 !important;
-        background-image: linear-gradient(rgba(128, 0, 0, 0.70), rgba(128, 0, 0, 0.70)), url('../../assets/img/pat.png?v=4') !important;
-        background-size: 100% auto;
-        background-repeat: no-repeat;
-        background-position: bottom left;
+        background-image: none !important;
         transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), width 0.32s cubic-bezier(0.22, 1, 0.36, 1), padding 0.32s cubic-bezier(0.22, 1, 0.36, 1);
         will-change: transform, width;
         backface-visibility: hidden;
         border-right: 1px solid #600000 !important;
+    }
+    #main-sidebar::before {
+        content: "" !important;
+        position: absolute !important;
+        inset: 0 !important;
+        background-image: linear-gradient(rgba(128, 0, 0, 0.70), rgba(128, 0, 0, 0.70)), url('../../assets/img/man.png?v=4') !important;
+        background-size: 140% auto !important;
+        background-repeat: no-repeat !important;
+        background-position: bottom right !important;
         background-blend-mode: overlay !important;
+        transform: scaleX(-1) !important;
+        pointer-events: none !important;
+        z-index: 0 !important;
+    }
+    #main-sidebar .sidebar-header-box,
+    #main-sidebar nav,
+    #main-sidebar .sidebar-profile-box {
+        position: relative !important;
+        z-index: 10 !important;
     }
     aside a span {
         font-size: 14px !important;
@@ -175,8 +190,11 @@ $current_page = basename($_SERVER['PHP_SELF']);
     }
     #main-sidebar #desktop-sidebar-toggle-btn {
         background-color: #800000 !important;
-        border-color: rgba(255, 255, 255, 0.2) !important;
-        color: rgba(255, 255, 255, 0.7) !important;
+        border-color: rgba(255, 255, 255, 0.3) !important;
+        color: rgba(255, 255, 255, 0.9) !important;
+        z-index: 9999 !important;
+        visibility: visible !important;
+        opacity: 1 !important;
     }
     #main-sidebar #desktop-sidebar-toggle-btn:hover {
         color: #ffffff !important;
@@ -522,6 +540,8 @@ $current_page = basename($_SERVER['PHP_SELF']);
             transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
             width: 16rem; /* 256px */
             z-index: 60 !important;
+            position: relative !important;
+            overflow: visible !important;
         }
         #main-sidebar.collapsed {
             width: 5rem !important; /* 80px */

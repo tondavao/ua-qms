@@ -46,7 +46,7 @@ if (isset($_POST['submit'])) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UA QMS | Login</title>
-    <link rel="stylesheet" href="assets/css/login.css?v=1.2.8">
+    <link rel="stylesheet" href="assets/css/login.css?v=1.2.7">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
@@ -66,7 +66,10 @@ if (isset($_POST['submit'])) {
             </div>
 
             <div class="brand-copy">
-                <h1>Q<span class="text-maroon">U</span><span class="text-gold">A</span>LITY MANAGEMENT<br>SYSTEM <span class="acronym">(UA QMS)</span></h1>
+                <h1>
+                    <span class="title-line">AUTOMATED Q<span class="text-maroon">U</span><span class="text-gold">A</span>LITY MONITORING</span><br>
+                    <span class="title-line">AND DOCUMENT SUBMISSION SYSTEM</span>
+                </h1>
                 <p class="description">
                     A unified compliance monitoring and document management platform for the University of Antique
                     Tario-Lim Memorial Campus Quality Management Office.
@@ -113,7 +116,7 @@ if (isset($_POST['submit'])) {
 
     <footer class="login-footer">
         <span>(C) 2026 UNIVERSITY OF ANTIQUE</span>
-        <span>UA QMS - QUALITY MANAGEMENT SYSTEM</span>
+        <span>UA QMS - AUTOMATED QUALITY MONITORING AND DOCUMENT SUBMISSION SYSTEM</span>
     </footer>
 </div>
 

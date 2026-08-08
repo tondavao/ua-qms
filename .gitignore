@@ -11,3 +11,4 @@ uploads/*
 !uploads/.gitkeep
 !uploads/**/.gitkeep
 *.log
+debug_log.txt
