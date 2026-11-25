@@ -486,7 +486,15 @@ async function refreshAnalytics() {
 }
 
 refreshAnalytics();
-setInterval(refreshAnalytics, 5000);
+if (window._qmoAnalyticsInterval) clearInterval(window._qmoAnalyticsInterval);
+window._qmoAnalyticsInterval = setInterval(() => {
+    if (!document.getElementById('docTypeAnalyticsBody')) {
+        clearInterval(window._qmoAnalyticsInterval);
+        window._qmoAnalyticsInterval = null;
+        return;
+    }
+    refreshAnalytics();
+}, 5000);
 })();
 </script>
 </body>

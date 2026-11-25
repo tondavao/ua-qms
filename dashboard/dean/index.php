@@ -109,15 +109,21 @@ $stmt_app->close();
 
 $stats['completion_rate'] = $total_required_docs > 0 ? round(($approved_required_count / $total_required_docs) * 100) : 0;
 
-// Fetch Upcoming Deadlines from target_submissions filtered by target year
+// Fetch Upcoming Deadlines from target_submissions filtered by target year and assigned unit scope
+require_once __DIR__ . "/../../includes/schema_helpers.php";
+ua_qms_ensure_target_office_table($conn);
 $deadlines = [];
 $sql_deadlines = "SELECT ts.deadline, dt.doc_code, dt.description 
                   FROM target_submissions ts 
                   JOIN document_types dt ON ts.doc_type_id = dt.doc_type_id 
-                  WHERE ts.year = ? AND ts.deadline >= CURDATE() 
-                  ORDER BY ts.deadline ASC LIMIT 3";
+                  WHERE ts.year = ? AND ts.deadline >= CURDATE()
+                    AND (
+                        NOT EXISTS (SELECT 1 FROM target_submission_offices tso WHERE tso.target_id = ts.target_id)
+                        OR EXISTS (SELECT 1 FROM target_submission_offices tso WHERE tso.target_id = ts.target_id AND tso.office_id = ?)
+                    )
+                  ORDER BY ts.deadline ASC LIMIT 5";
 $stmt_deadlines = $conn->prepare($sql_deadlines);
-$stmt_deadlines->bind_param("s", $active_year);
+$stmt_deadlines->bind_param("si", $active_year, $office_id);
 $stmt_deadlines->execute();
 $res_deadlines = $stmt_deadlines->get_result();
 while($row = $res_deadlines->fetch_assoc()) {
@@ -125,11 +131,14 @@ while($row = $res_deadlines->fetch_assoc()) {
 }
 
 // Fetch Revision Inbox (Documents with Revision status and latest comment)
+ua_qms_ensure_document_annotations_table($conn);
 $revisions = [];
-$sql_revisions = "SELECT d.document_id, d.file_name, dt.doc_code, dr.remarks, dr.reviewed_at 
+$sql_revisions = "SELECT d.document_id, d.file_name, dt.doc_code, dr.remarks, dr.reviewed_at,
+                         (da.annotation_id IS NOT NULL) AS has_edits
                   FROM documents d
                   JOIN document_types dt ON d.doc_type_id = dt.doc_type_id
                   LEFT JOIN document_reviews dr ON d.document_id = dr.document_id
+                  LEFT JOIN document_annotations da ON d.document_id = da.document_id
                   WHERE d.office_id = ? AND d.status = 'Revision'
                   AND dr.review_id = (SELECT MAX(review_id) FROM document_reviews WHERE document_id = d.document_id)
                   ORDER BY dr.reviewed_at DESC";
@@ -192,6 +201,7 @@ if ($stmt_missing) {
     </script>
     <script src="../../assets/js/messaging.js" defer></script>
     <script src="../../assets/js/notifications.js" defer></script>
+    <script src="../../assets/js/document-editor.js" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
@@ -316,7 +326,12 @@ if ($stmt_missing) {
                                         <p style="margin-top: 8px; font-size: 0.95rem;">
                                             <strong>Admin Comment:</strong> <span style="color: #b91c1c; font-weight: 600;"><?php echo htmlspecialchars($rev['remarks']); ?></span>
                                         </p>
-                                        <div style="margin-top: 10px;">
+                                        <div style="margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px;">
+                                            <?php if (!empty($rev['has_edits'])): ?>
+                                                <button type="button" onclick="openDocumentEditor(<?php echo (int)$rev['document_id']; ?>, 'view')" style="font-size: 0.8rem; padding: 5px 12px; background: #fef3c7; color: #78350f; border: 1px solid #fcd34d; border-radius: 6px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+                                                    <i class="fas fa-highlighter"></i> View Highlighted Edits
+                                                </button>
+                                            <?php endif; ?>
                                             <a href="submit_document.php?re-submit=<?php echo $rev['document_id']; ?>" class="btn btn-primary" style="font-size: 0.8rem; padding: 5px 12px;">
                                                 <i data-lucide="upload-cloud" style="width: 14px;"></i> Re-submit Version
                                             </a>
@@ -476,7 +491,15 @@ if ($stmt_missing) {
             });
         }
 
-        setInterval(updateCountdowns, 60000);
+        if (window._deanCountdownInterval) clearInterval(window._deanCountdownInterval);
+        window._deanCountdownInterval = setInterval(() => {
+            if (!document.getElementById('deanDeadlinesBody')) {
+                clearInterval(window._deanCountdownInterval);
+                window._deanCountdownInterval = null;
+                return;
+            }
+            updateCountdowns();
+        }, 60000);
         updateCountdowns();
         if (typeof lucide !== 'undefined') {
             lucide.createIcons();
@@ -593,7 +616,8 @@ if ($stmt_missing) {
                                         <p style="margin-top: 8px; font-size: 0.95rem;">
                                             <strong>Admin Comment:</strong> <span style="color: #b91c1c; font-weight: 600;">${escapeHtml(rev.remarks)}</span>
                                         </p>
-                                        <div style="margin-top: 10px;">
+                                        <div style="margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px;">
+                                            ${Number(rev.has_edits) ? `<button type="button" onclick="openDocumentEditor(${Number(rev.document_id)}, 'view')" style="font-size: 0.8rem; padding: 5px 12px; background: #fef3c7; color: #78350f; border: 1px solid #fcd34d; border-radius: 6px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;"><i class="fas fa-highlighter"></i> View Highlighted Edits</button>` : ''}
                                             <a href="submit_document.php?re-submit=${encodeURIComponent(rev.document_id)}" class="btn btn-primary" style="font-size: 0.8rem; padding: 5px 12px;">
                                                 <i data-lucide="upload-cloud" style="width: 14px;"></i> Re-submit Version
                                             </a>
@@ -667,8 +691,16 @@ if ($stmt_missing) {
             }
         }
         
-        // Start dashboard updates polling
-        setInterval(refreshDeanDashboard, 5000);
+        // Start dashboard updates polling (guarded for PJAX)
+        if (window._deanDashboardInterval) clearInterval(window._deanDashboardInterval);
+        window._deanDashboardInterval = setInterval(() => {
+            if (!document.getElementById('deanRevisionInboxBody')) {
+                clearInterval(window._deanDashboardInterval);
+                window._deanDashboardInterval = null;
+                return;
+            }
+            refreshDeanDashboard();
+        }, 5000);
 
         // Lightbox Modal Logic
         function openLightboxModal(src, title) {

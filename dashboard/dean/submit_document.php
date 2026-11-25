@@ -5,6 +5,8 @@ require_once __DIR__ . "/../../includes/system_settings.php";
 require_once __DIR__ . "/../../includes/file-type-detector.php";
 require_once __DIR__ . "/../../includes/convert-to-pdf.php";
 require_once __DIR__ . "/../../includes/workflow-tracking.php";
+require_once __DIR__ . "/../../includes/schema_helpers.php";
+ua_qms_ensure_document_annotations_table($conn);
 
 /**
  * Helper function to trigger a notification
@@ -83,17 +85,21 @@ if ($office_id) {
 }
 
 // If re-submitting, fetch previous version details for Comparison Mode
+$previous_has_edits = false;
 if ($re_submit_id) {
-    $sql_prev = "SELECT d.*, dt.doc_code, dt.description, dr.remarks 
+    $sql_prev = "SELECT d.*, dt.doc_code, dt.description, dr.remarks,
+                        (da.annotation_id IS NOT NULL) AS has_edits
                  FROM documents d 
                  JOIN document_types dt ON d.doc_type_id = dt.doc_type_id
                  LEFT JOIN document_reviews dr ON d.document_id = dr.document_id
+                 LEFT JOIN document_annotations da ON d.document_id = da.document_id
                  WHERE d.document_id = ? AND d.office_id = ?
                  ORDER BY dr.review_id DESC LIMIT 1";
     $stmt_prev = $conn->prepare($sql_prev);
     $stmt_prev->bind_param("ii", $re_submit_id, $office_id);
     $stmt_prev->execute();
     $previous_version = $stmt_prev->get_result()->fetch_assoc();
+    $previous_has_edits = !empty($previous_version['has_edits']);
 }
 
 // Fetch available document types
@@ -106,8 +112,10 @@ while($row = $res_types->fetch_assoc()) {
 // Handle Form Submission
 $message = "";
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    // Check for duplicate submission via token
-    if (!isset($_POST['submit_token']) || $_POST['submit_token'] !== $_SESSION['submit_token']) {
+    // Detect when upload exceeds PHP post_max_size (which causes PHP to empty $_POST and $_FILES)
+    if (empty($_POST) && empty($_FILES) && isset($_SERVER['CONTENT_LENGTH']) && (int)$_SERVER['CONTENT_LENGTH'] > 0) {
+        $message = "Error: File size exceeds the server upload limit (60MB maximum).";
+    } elseif (!isset($_POST['submit_token']) || $_POST['submit_token'] !== $_SESSION['submit_token']) {
         $message = "Error: Duplicate submission detected or session expired.";
     } elseif ($maintenance_mode) {
         $message = "Error: Submissions are temporarily locked for system maintenance.";
@@ -115,21 +123,35 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         // Refresh token for next submission
         $_SESSION['submit_token'] = bin2hex(random_bytes(32));
         
-        $doc_type_id = $_POST['doc_type_id'];
+        $doc_type_id = $_POST['doc_type_id'] ?? '';
         if ($previous_version) {
             $doc_type_id = $previous_version['doc_type_id'];
         }
-        $file = $_FILES['document_file'];
+        $file = $_FILES['document_file'] ?? null;
     
     // Server-side validation
-    $allowed_exts = ['pdf', 'docx', 'xlsx', 'jpg', 'jpeg', 'png'];
-    $file_ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-    $max_size = 10 * 1024 * 1024; // 10MB
+    $allowed_exts = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'jpg', 'jpeg', 'png'];
+    $file_ext = $file && !empty($file['name']) ? strtolower(pathinfo($file['name'], PATHINFO_EXTENSION)) : '';
+    $max_size = 60 * 1024 * 1024; // 60MB
 
-    if (!in_array($file_ext, $allowed_exts)) {
-        $message = "Error: Invalid file format. Only PDF, DOCX, XLSX, JPG, PNG are allowed.";
+    if (!$doc_type_id) {
+        $message = "Error: Please select a document type.";
+    } elseif (!$file || !isset($file['error']) || $file['error'] === UPLOAD_ERR_NO_FILE) {
+        $message = "Error: Please select a file to upload.";
+    } elseif ($file['error'] !== UPLOAD_ERR_OK) {
+        $upload_errors = [
+            UPLOAD_ERR_INI_SIZE   => 'The uploaded file exceeds the server upload size limit (60MB max).',
+            UPLOAD_ERR_FORM_SIZE  => 'The uploaded file exceeds the form size limit (60MB max).',
+            UPLOAD_ERR_PARTIAL    => 'The file was only partially uploaded. Please try again.',
+            UPLOAD_ERR_NO_TMP_DIR => 'Server missing temporary upload folder.',
+            UPLOAD_ERR_CANT_WRITE => 'Failed to write uploaded file to disk.',
+            UPLOAD_ERR_EXTENSION  => 'A server extension stopped the file upload.',
+        ];
+        $message = "Error: " . ($upload_errors[$file['error']] ?? 'File upload failed (code ' . $file['error'] . ').');
+    } elseif (!in_array($file_ext, $allowed_exts, true)) {
+        $message = "Error: Invalid file format. Only PDF, DOC, DOCX, XLS, XLSX, JPG, PNG are allowed.";
     } elseif ($file['size'] > $max_size) {
-        $message = "Error: File size exceeds 10MB limit.";
+        $message = "Error: File size exceeds 60MB limit.";
     } else {
         // Process upload
         $safe_year = preg_replace('/[^A-Za-z0-9_-]/', '_', $active_year);
@@ -162,19 +184,23 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             
             if ($office_id) {
                 $preview_path = NULL;
-                $fileInfo = FileTypeDetector::detectFileType($target_path);
- 
-                // If it's an office document, convert to PDF
-                if ($fileInfo['type'] === 'office') {
-                    $preview_dir = "../../uploads/previews/" . $safe_year . "/" . $safe_quarter . "/";
-                    if (!is_dir($preview_dir)) mkdir($preview_dir, 0777, true);
-                    $converted_pdf_path = PdfConverter::convertToPdf($target_path, $preview_dir);
-                    if ($converted_pdf_path) {
-                        $preview_path = $converted_pdf_path;
-                    } else {
-                        // Log error, but still proceed with original file
-                        error_log("Failed to convert Office document to PDF: " . $target_path);
+                try {
+                    $fileInfo = FileTypeDetector::detectFileType($target_path);
+
+                    // If it's an office document, attempt optional PDF conversion without failing upload
+                    if (($fileInfo['type'] ?? '') === 'office') {
+                        $preview_dir = "../../uploads/previews/" . $safe_year . "/" . $safe_quarter . "/";
+                        if (!is_dir($preview_dir)) {
+                            @mkdir($preview_dir, 0777, true);
+                        }
+                        $converted_pdf_path = PdfConverter::convertToPdf($target_path, $preview_dir);
+                        if ($converted_pdf_path) {
+                            $preview_path = $converted_pdf_path;
+                        }
                     }
+                } catch (Throwable $e) {
+                    error_log("Optional file preview processing skipped for {$target_path}: " . $e->getMessage());
+                    $preview_path = NULL;
                 }
 
                 // Detect duplicate/previous submission if not already set by re-submit
@@ -294,6 +320,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="../../assets/js/messaging.js" defer></script>
     <script src="../../assets/js/notifications.js" defer></script>
+    <script src="../../assets/js/document-editor.js" defer></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="../../assets/js/scanner-processor.js"></script>
     <style>
@@ -449,18 +476,26 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                             <?php if($message): ?>
                                 <?php if(strpos($message, 'Success') !== false): ?>
                                     <script>
-                                        if (document.readyState === 'loading') {
-                                            document.addEventListener('DOMContentLoaded', function() {
-                                                showSuccessModal('<?php echo htmlspecialchars($message, ENT_QUOTES); ?>');
-                                            });
-                                        } else {
-                                            showSuccessModal('<?php echo htmlspecialchars($message, ENT_QUOTES); ?>');
-                                        }
+                                        (function() {
+                                            var successMsg = <?php echo json_encode($message); ?>;
+                                            function triggerModal() {
+                                                if (typeof showSuccessModal === 'function') {
+                                                    showSuccessModal(successMsg);
+                                                } else {
+                                                    setTimeout(triggerModal, 50);
+                                                }
+                                            }
+                                            if (document.readyState === 'loading') {
+                                                document.addEventListener('DOMContentLoaded', triggerModal);
+                                            } else {
+                                                setTimeout(triggerModal, 0);
+                                            }
+                                        })();
                                     </script>
                                 <?php else: ?>
                                     <div class="p-4 mb-6 rounded-xl border text-sm font-medium flex items-center gap-3 bg-red-50 border-red-200 text-red-800 dismissible-alert">
                                         <i class="fas fa-times-circle text-lg flex-shrink-0"></i>
-                                        <span><?php echo $message; ?></span>
+                                        <span><?php echo htmlspecialchars($message); ?></span>
                                     </div>
                                 <?php endif; ?>
                             <?php endif; ?>
@@ -541,7 +576,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                                          <!-- Upload Tab Content -->
                                          <div id="upload-tab" class="tab-content block">
                                              <div id="dropzone" class="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:border-[#800000] hover:bg-red-50/10 transition-all cursor-pointer relative group shadow-sm bg-gray-50/50">
-                                                 <input type="file" name="document_file" id="document_file" class="hidden">
+                                                 <input type="file" name="document_file" id="document_file" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png" class="hidden">
                                                  
                                                  <div id="dropzone-prompt" class="space-y-4">
                                                      <div class="w-14 h-14 mx-auto bg-red-50 text-[#800000] rounded-full flex items-center justify-center group-hover:scale-110 transition-transform shadow-inner">
@@ -549,7 +584,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                                                      </div>
                                                      <div>
                                                          <p class="text-sm font-bold text-gray-700">Drag & drop your file here, or <span class="text-[#800000] hover:underline font-extrabold">browse</span></p>
-                                                         <p class="text-[11px] text-gray-400 mt-1">Accepts PDF, DOCX, XLSX, JPG, PNG up to 10MB</p>
+                                                         <p class="text-[11px] text-gray-400 mt-1">Accepts PDF, DOC, DOCX, XLS, XLSX, JPG, PNG up to 60MB</p>
                                                      </div>
                                                  </div>
 
@@ -618,6 +653,16 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                                              <p class="text-sm text-red-950 font-bold leading-relaxed italic">
                                                  "<?php echo htmlspecialchars($previous_version['remarks'] ?? 'No feedback remarks provided by reviewer.'); ?>"
                                              </p>
+                                             <?php if ($previous_has_edits): ?>
+                                                 <div class="mt-3 pt-3 border-t border-red-200 flex flex-wrap items-center justify-between gap-2">
+                                                     <span class="text-xs text-red-900 font-semibold flex items-center gap-1.5">
+                                                         <i class="fas fa-highlighter text-[#800000]"></i> Reviewer attached highlighted edits on your document.
+                                                     </span>
+                                                     <button type="button" onclick="openDocumentEditor(<?php echo (int)$previous_version['document_id']; ?>, 'view')" class="px-3 py-1.5 bg-[#800000] hover:bg-red-900 text-white text-xs font-bold rounded-lg shadow-sm transition inline-flex items-center gap-1.5">
+                                                         <i class="fas fa-highlighter text-[10px]"></i> View Highlighted Edits
+                                                     </button>
+                                                 </div>
+                                             <?php endif; ?>
                                          </div>
 
                                          <!-- Clean Details Table -->
@@ -714,13 +759,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 return;
             }
             
-            const maxSize = 10 * 1024 * 1024;
-            const allowedExts = ['pdf', 'docx', 'xlsx', 'jpg', 'jpeg', 'png'];
+            const maxSize = 60 * 1024 * 1024;
+            const allowedExts = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'jpg', 'jpeg', 'png'];
             const fileExt = file.name.split('.').pop().toLowerCase();
             
             if (!allowedExts.includes(fileExt)) {
                 if (errorEl && errorText) {
-                    errorText.textContent = 'Invalid file format. Only PDF, DOCX, XLSX, JPG, PNG are allowed.';
+                    errorText.textContent = 'Invalid file format. Only PDF, DOC, DOCX, XLS, XLSX, JPG, PNG are allowed.';
                     errorEl.classList.remove('hidden');
                 }
                 stagedContainer.classList.add('hidden');
@@ -728,7 +773,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 document.getElementById('document_file').value = '';
             } else if (file.size > maxSize) {
                 if (errorEl && errorText) {
-                    errorText.textContent = 'File size exceeds 10MB limit.';
+                    errorText.textContent = 'File size exceeds 60MB limit.';
                     errorEl.classList.remove('hidden');
                 }
                 stagedContainer.classList.add('hidden');
@@ -751,9 +796,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             }
         });
 
-        // Drag and Drop implementation
-        var dropzone = dropzone || document.getElementById('dropzone');
-        var fileInput = fileInput || document.getElementById('document_file');
+        // Drag and Drop implementation (always query fresh DOM nodes for PJAX safety)
+        var dropzone = document.getElementById('dropzone');
+        var fileInput = document.getElementById('document_file');
         
         if (dropzone && fileInput) {
             // Click to browse
@@ -909,9 +954,19 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             }
         }
 
-        // Prevent double submission
-        var isSubmitting = isSubmitting || false;
+        // Prevent double submission (reset on each page/PJAX load)
+        var isSubmitting = false;
         function preventDoubleSubmit() {
+            const input = document.getElementById('document_file');
+            const errorEl = document.getElementById('fileError');
+            const errorText = document.getElementById('file-error-text');
+            if (!input || !input.files || input.files.length === 0) {
+                if (errorEl && errorText) {
+                    errorText.textContent = 'Please select or scan a document file before submitting.';
+                    errorEl.classList.remove('hidden');
+                }
+                return false;
+            }
             if (isSubmitting) return false;
             isSubmitting = true;
             const submitBtn = document.querySelector('#submissionForm button[type="submit"]');

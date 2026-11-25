@@ -256,6 +256,36 @@ ua_qms_seed_default_units($conn);
                 <!-- Tab Contents -->
                 <div id="content-academic" class="tab-content hidden space-y-6">
                     <div class="grid grid-cols-1 gap-6">
+                        <!-- Active Academic Period (Year & Quarter) -->
+                        <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
+                            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4 pb-3 border-b border-gray-150">
+                                <div>
+                                    <h2 class="text-base font-bold flex items-center gap-2 text-gray-800"><i class="fas fa-calendar-check text-primary"></i> Active Academic Period</h2>
+                                    <p class="text-xs text-gray-500 mt-0.5">Configure the active Academic Year and Quarter applied across all dashboards and submissions.</p>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
+                                <div>
+                                    <label class="block text-xs font-bold text-gray-500 uppercase mb-1.5">Active Academic Year</label>
+                                    <select id="active-system-ay" class="w-full p-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-ua-maroon"></select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-gray-500 uppercase mb-1.5">Active Quarter</label>
+                                    <select id="active-system-quarter" class="w-full p-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-ua-maroon">
+                                        <option value="1st Quarter">1st Quarter</option>
+                                        <option value="2nd Quarter">2nd Quarter</option>
+                                        <option value="3rd Quarter">3rd Quarter</option>
+                                        <option value="4th Quarter">4th Quarter</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <button type="button" onclick="saveActivePeriod()" class="w-full bg-[#800000] hover:bg-red-950 text-white px-4 py-2.5 rounded-lg text-xs font-bold transition shadow flex items-center justify-center gap-2">
+                                        <i class="fas fa-save"></i> Apply Active Period
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Academic Year Management -->
                         <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
                             <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 pb-4 border-b border-gray-150">
@@ -647,7 +677,7 @@ ua_qms_seed_default_units($conn);
         </div>
 
         <!-- Add/Edit Submission Deadline Modal -->
-        <div id="modal-deadline" class="bg-white rounded-xl p-6 w-full max-w-md hidden overflow-visible shadow-2xl">
+        <div id="modal-deadline" class="bg-white rounded-xl p-6 w-full max-w-lg hidden overflow-visible shadow-2xl max-h-[90vh] overflow-y-auto">
             <div class="px-6 py-4 bg-[#800000] text-white flex justify-between items-center -mx-6 -mt-6 mb-5 rounded-t-xl">
                 <h3 id="deadline-modal-title" class="font-bold flex items-center gap-2"><i class="fas fa-clock"></i> Add Submission Deadline</h3>
                 <button onclick="closeModal()" class="text-white hover:text-gray-200 transition"><i class="fas fa-times"></i></button>
@@ -669,7 +699,36 @@ ua_qms_seed_default_units($conn);
                 </div>
                 <div>
                     <label class="block text-sm font-bold mb-1 text-gray-700">Document Type</label>
-                    <select id="deadline-doc-type" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon"></select>
+                    <select id="deadline-doc-type" onchange="handleDeadlineDocTypeChange()" class="w-full p-2.5 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-ua-maroon"></select>
+                </div>
+                <!-- CAR Specific Unit Selection (shown only when CAR is selected) -->
+                <div id="deadline-car-units-section" class="hidden border border-red-200 bg-red-50/40 rounded-lg p-3.5 space-y-3">
+                    <div class="flex items-center justify-between gap-2">
+                        <label class="block text-xs font-bold text-[#800000] uppercase tracking-wider">
+                            <i class="fas fa-building mr-1"></i> Target Units for CAR
+                        </label>
+                        <span id="car-units-selected-badge" class="text-[11px] font-bold px-2 py-0.5 rounded-full bg-white border border-red-200 text-[#800000]">All Units</span>
+                    </div>
+                    <div class="flex items-center gap-4 text-xs font-semibold text-gray-700">
+                        <label class="inline-flex items-center gap-1.5 cursor-pointer">
+                            <input type="radio" name="car_unit_scope" value="specific" checked onchange="toggleCarUnitScope()" class="accent-[#800000]">
+                            <span>Specific Units Only</span>
+                        </label>
+                        <label class="inline-flex items-center gap-1.5 cursor-pointer">
+                            <input type="radio" name="car_unit_scope" value="all" onchange="toggleCarUnitScope()" class="accent-[#800000]">
+                            <span>All Units</span>
+                        </label>
+                    </div>
+                    <div id="car-units-picker-wrap" class="space-y-2">
+                        <div class="flex items-center gap-2">
+                            <input type="text" id="car-unit-search" oninput="filterCarUnitCheckboxes()" placeholder="Search unit name or code..." class="flex-1 px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-[#800000]">
+                            <button type="button" onclick="selectAllCarUnits(true)" class="px-2 py-1.5 text-[11px] font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 transition">All</button>
+                            <button type="button" onclick="selectAllCarUnits(false)" class="px-2 py-1.5 text-[11px] font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 transition">Clear</button>
+                        </div>
+                        <div id="car-units-checkbox-list" class="max-h-44 overflow-y-auto bg-white border border-gray-200 rounded-lg divide-y divide-gray-100 p-1">
+                            <p class="text-xs text-gray-400 text-center py-3">Loading units...</p>
+                        </div>
+                    </div>
                 </div>
                 <div>
                     <label class="block text-sm font-bold mb-1 text-gray-700">Deadline</label>
@@ -696,7 +755,7 @@ ua_qms_seed_default_units($conn);
         }
 
         function loadTabData(tab) {
-            if (tab === 'academic') { loadAYs(); }
+            if (tab === 'academic') { loadAYs(); loadSystemConfig(); }
             if (tab === 'documents') loadDocTypes();
             if (tab === 'offices') loadOffices();
             if (tab === 'system') loadSystemConfig();
@@ -779,8 +838,12 @@ ua_qms_seed_default_units($conn);
                 });
                 const data = await res.json();
                 if (data.success) {
-                    loadAYs();
-                    loadSystemConfig();
+                    if (window.systemSettings) {
+                        window.systemSettings.active_academic_year = data.active_year || window.systemSettings.active_academic_year;
+                        window.systemSettings.active_semester = data.active_semester || '1st Quarter';
+                    }
+                    await loadAYs();
+                    await loadSystemConfig();
                 } else {
                     alert('Error: ' + data.error);
                 }
@@ -1134,30 +1197,21 @@ ua_qms_seed_default_units($conn);
 
         async function loadSystemConfig() {
             try {
-                console.log("loadSystemConfig invoked");
                 // 1. Fetch available AYs for active AY dropdown
                 const ayRes = await fetch('../../api/settings_api.php?action=get_academic_years');
-                console.log("get_academic_years HTTP status:", ayRes.status);
                 const ayData = await ayRes.json();
-                console.log("get_academic_years JSON success:", ayData.success, "Data:", ayData.data);
                 
                 const aySelect = document.getElementById('active-system-ay');
                 if (aySelect && ayData.success) {
                     aySelect.innerHTML = (ayData.data || []).map(ay => `<option value="${ay.year_range}">${ay.year_range}</option>`).join('');
-                    console.log("aySelect innerHTML updated, options count:", aySelect.options.length);
                     if (typeof aySelect.rebuildCustomOptions === 'function') {
-                        console.log("Calling aySelect.rebuildCustomOptions()");
                         aySelect.rebuildCustomOptions();
-                    } else {
-                        console.log("Warning: aySelect.rebuildCustomOptions is not a function!");
                     }
                 }
 
                 // 2. Fetch current settings from DB
                 const settingsRes = await fetch('../../api/settings_api.php?action=get_system_settings');
-                console.log("get_system_settings HTTP status:", settingsRes.status);
                 const settingsData = await settingsRes.json();
-                console.log("get_system_settings JSON success:", settingsData.success, "Data:", settingsData.data);
                 
                 if (settingsData.success) {
                     window.systemSettings = settingsData.data;
@@ -1165,7 +1219,6 @@ ua_qms_seed_default_units($conn);
                     const activeAySelect = document.getElementById('active-system-ay');
                     if (activeAySelect) {
                         activeAySelect.value = s.active_academic_year || '';
-                        console.log("Setting activeAySelect.value to:", s.active_academic_year);
                         if (typeof activeAySelect.rebuildCustomOptions === 'function') {
                             activeAySelect.rebuildCustomOptions();
                         }
@@ -1173,7 +1226,6 @@ ua_qms_seed_default_units($conn);
                     const activeQuarterSelect = document.getElementById('active-system-quarter');
                     if (activeQuarterSelect) {
                         activeQuarterSelect.value = s.active_semester || '1st Quarter';
-                        console.log("Setting activeQuarterSelect.value to:", s.active_semester);
                         if (typeof activeQuarterSelect.rebuildCustomOptions === 'function') {
                             activeQuarterSelect.rebuildCustomOptions();
                         }
@@ -1218,6 +1270,109 @@ ua_qms_seed_default_units($conn);
             renderSubmissionDeadlines();
         }
 
+        async function ensureOfficesLoadedForDeadlines() {
+            if (allOffices.length > 0) return;
+            const res = await fetch('../../api/settings_api.php?action=get_offices');
+            const data = await res.json();
+            allOffices = data.data || [];
+        }
+
+        function isSelectedDeadlineDocTypeCar() {
+            const docTypeId = document.getElementById('deadline-doc-type')?.value || '';
+            if (!docTypeId || docTypeId === 'all') return false;
+            const found = allDocTypes.find(t => String(t.doc_type_id) === String(docTypeId));
+            return found && String(found.doc_code || '').trim().toUpperCase() === 'CAR';
+        }
+
+        async function renderCarUnitCheckboxes(selectedIds = []) {
+            await ensureOfficesLoadedForDeadlines();
+            const listEl = document.getElementById('car-units-checkbox-list');
+            if (!listEl) return;
+            const activeOffices = allOffices.filter(o => o.status === 'Active');
+            const selectedSet = new Set((selectedIds || []).map(id => Number(id)));
+            if (activeOffices.length === 0) {
+                listEl.innerHTML = '<p class="text-xs text-gray-400 text-center py-3">No active units available.</p>';
+                updateCarUnitsBadge();
+                return;
+            }
+            listEl.innerHTML = activeOffices.map(o => {
+                const checked = selectedSet.has(Number(o.office_id)) ? 'checked' : '';
+                const label = `${escapeHtml(o.office_name)}${o.office_code ? ' (' + escapeHtml(o.office_code) + ')' : ''}`;
+                return `
+                    <label class="car-unit-item flex items-center gap-2.5 px-2.5 py-2 hover:bg-red-50/50 cursor-pointer text-xs text-gray-700" data-search="${escapeHtml((o.office_name + ' ' + (o.office_code || '')).toLowerCase())}">
+                        <input type="checkbox" class="car-unit-checkbox accent-[#800000] rounded" value="${Number(o.office_id)}" ${checked} onchange="updateCarUnitsBadge()">
+                        <span class="font-medium leading-snug">${label}</span>
+                    </label>
+                `;
+            }).join('');
+            updateCarUnitsBadge();
+        }
+
+        function updateCarUnitsBadge() {
+            const badge = document.getElementById('car-units-selected-badge');
+            if (!badge) return;
+            const scope = document.querySelector('input[name="car_unit_scope"]:checked')?.value || 'specific';
+            if (scope === 'all') {
+                badge.textContent = 'All Units';
+                return;
+            }
+            const count = document.querySelectorAll('.car-unit-checkbox:checked').length;
+            badge.textContent = count === 0 ? 'None selected' : `${count} unit${count === 1 ? '' : 's'} selected`;
+        }
+
+        function toggleCarUnitScope() {
+            const scope = document.querySelector('input[name="car_unit_scope"]:checked')?.value || 'specific';
+            const wrap = document.getElementById('car-units-picker-wrap');
+            if (wrap) {
+                wrap.classList.toggle('hidden', scope === 'all');
+            }
+            updateCarUnitsBadge();
+        }
+
+        function filterCarUnitCheckboxes() {
+            const q = (document.getElementById('car-unit-search')?.value || '').trim().toLowerCase();
+            document.querySelectorAll('#car-units-checkbox-list .car-unit-item').forEach(el => {
+                const text = el.getAttribute('data-search') || '';
+                el.style.display = (!q || text.includes(q)) ? 'flex' : 'none';
+            });
+        }
+
+        function selectAllCarUnits(checked) {
+            document.querySelectorAll('#car-units-checkbox-list .car-unit-item').forEach(el => {
+                if (el.style.display !== 'none') {
+                    const cb = el.querySelector('.car-unit-checkbox');
+                    if (cb) cb.checked = checked;
+                }
+            });
+            updateCarUnitsBadge();
+        }
+
+        async function handleDeadlineDocTypeChange(preselectedOfficeIds = null) {
+            const section = document.getElementById('deadline-car-units-section');
+            if (!section) return;
+            if (isSelectedDeadlineDocTypeCar()) {
+                section.classList.remove('hidden');
+                const searchInput = document.getElementById('car-unit-search');
+                if (searchInput) searchInput.value = '';
+                const specificRadio = document.querySelector('input[name="car_unit_scope"][value="specific"]');
+                const allRadio = document.querySelector('input[name="car_unit_scope"][value="all"]');
+                if (Array.isArray(preselectedOfficeIds)) {
+                    if (preselectedOfficeIds.length > 0) {
+                        if (specificRadio) specificRadio.checked = true;
+                    } else {
+                        if (allRadio) allRadio.checked = true;
+                    }
+                    await renderCarUnitCheckboxes(preselectedOfficeIds);
+                } else {
+                    if (specificRadio) specificRadio.checked = true;
+                    await renderCarUnitCheckboxes([]);
+                }
+                toggleCarUnitScope();
+            } else {
+                section.classList.add('hidden');
+            }
+        }
+
         function renderSubmissionDeadlines() {
             const list = document.getElementById('deadline-list');
             if (!list) return;
@@ -1227,13 +1382,34 @@ ua_qms_seed_default_units($conn);
                 return;
             }
 
-            list.innerHTML = allDeadlines.map(item => `
+            list.innerHTML = allDeadlines.map(item => {
+                const targetOffices = Array.isArray(item.target_offices) ? item.target_offices : [];
+                let unitBadgesHtml = '';
+                if (targetOffices.length > 0) {
+                    const fullNames = targetOffices.map(o => o.office_name).join(', ');
+                    const shortCodes = targetOffices.slice(0, 4).map(o => o.office_code || o.office_name).join(', ');
+                    const moreText = targetOffices.length > 4 ? ` +${targetOffices.length - 4} more` : '';
+                    unitBadgesHtml = `
+                        <div class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-50 border border-red-200 text-[11px] font-semibold text-[#800000]" title="${escapeHtml(fullNames)}">
+                            <i class="fas fa-building text-[9px]"></i>
+                            <span>Specific Units (${targetOffices.length}): ${escapeHtml(shortCodes + moreText)}</span>
+                        </div>
+                    `;
+                } else if (String(item.doc_code || '').trim().toUpperCase() === 'CAR') {
+                    unitBadgesHtml = `
+                        <div class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-gray-100 border border-gray-200 text-[11px] font-semibold text-gray-600">
+                            <i class="fas fa-globe text-[9px]"></i> All Units
+                        </div>
+                    `;
+                }
+                return `
                 <tr class="border-b hover:bg-gray-50/50 transition-colors">
                     <td class="p-3 font-semibold text-gray-700">${escapeHtml(item.year)}</td>
                     <td class="p-3"><span class="px-2 py-0.5 rounded text-xs font-bold bg-blue-50 text-blue-800">${escapeHtml(item.quarter)}</span></td>
                     <td class="p-3">
                         <div class="font-bold text-ua-maroon">${escapeHtml(item.doc_code)}</div>
                         <div class="text-xs text-gray-500">${escapeHtml(item.description)}</div>
+                        ${unitBadgesHtml}
                     </td>
                     <td class="p-3 font-semibold text-gray-700">${escapeHtml(item.deadline)}</td>
                     <td class="p-3">
@@ -1247,7 +1423,8 @@ ua_qms_seed_default_units($conn);
                         </div>
                     </td>
                 </tr>
-            `).join('');
+            `;
+            }).join('');
         }
 
         async function populateDeadlineDocTypes(selectedId = '', isEdit = false) {
@@ -1263,6 +1440,9 @@ ua_qms_seed_default_units($conn);
                 </option>
             `).join('');
             select.innerHTML = optionsHtml;
+            if (typeof select.rebuildCustomOptions === 'function') {
+                select.rebuildCustomOptions();
+            }
         }
 
         async function showDeadlineModal(targetId = null) {
@@ -1271,9 +1451,10 @@ ua_qms_seed_default_units($conn);
             document.getElementById('deadline-id').value = item?.target_id || '';
             let activeAY = window.systemSettings?.active_academic_year || '';
             document.getElementById('deadline-year').value = item?.year || activeAY || String(new Date().getFullYear());
-            document.getElementById('deadline-quarter').value = item?.quarter || '1st Quarter';
+            document.getElementById('deadline-quarter').value = item?.quarter || (window.systemSettings?.active_semester || '1st Quarter');
             document.getElementById('deadline-date').value = item?.deadline || '';
             await populateDeadlineDocTypes(item?.doc_type_id || '', !!item);
+            await handleDeadlineDocTypeChange(item ? (item.target_office_ids || []) : null);
 
             document.getElementById('modal-container').classList.remove('hidden');
             document.getElementById('modal-container').classList.add('flex');
@@ -1282,12 +1463,25 @@ ua_qms_seed_default_units($conn);
 
         async function saveDeadline() {
             const targetId = document.getElementById('deadline-id').value;
+            let officeIds = [];
+            if (isSelectedDeadlineDocTypeCar()) {
+                const scope = document.querySelector('input[name="car_unit_scope"]:checked')?.value || 'specific';
+                if (scope === 'specific') {
+                    officeIds = Array.from(document.querySelectorAll('.car-unit-checkbox:checked')).map(cb => Number(cb.value));
+                    if (officeIds.length === 0) {
+                        alert('Please select at least one unit for this CAR deadline, or choose "All Units".');
+                        return;
+                    }
+                }
+            }
+
             const payload = {
                 target_id: targetId,
                 year: document.getElementById('deadline-year').value,
                 quarter: document.getElementById('deadline-quarter').value,
                 doc_type_id: document.getElementById('deadline-doc-type').value,
-                deadline: document.getElementById('deadline-date').value
+                deadline: document.getElementById('deadline-date').value,
+                office_ids: officeIds
             };
 
             if (!/^\d{4}(-\d{4})?$/.test(payload.year)) {
@@ -1298,6 +1492,7 @@ ua_qms_seed_default_units($conn);
             const action = targetId ? 'edit_submission_deadline' : 'add_submission_deadline';
             const res = await fetch('../../api/settings_api.php?action=' + action, {
                 method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
             const data = await res.json();
@@ -1506,6 +1701,11 @@ ua_qms_seed_default_units($conn);
         window.showDeadlineModal = showDeadlineModal;
         window.saveDeadline = saveDeadline;
         window.deleteDeadline = deleteDeadline;
+        window.handleDeadlineDocTypeChange = handleDeadlineDocTypeChange;
+        window.toggleCarUnitScope = toggleCarUnitScope;
+        window.filterCarUnitCheckboxes = filterCarUnitCheckboxes;
+        window.selectAllCarUnits = selectAllCarUnits;
+        window.updateCarUnitsBadge = updateCarUnitsBadge;
 
         window.loadAnnouncements = loadAnnouncements;
         window.openAnnouncementModal = openAnnouncementModal;
@@ -1555,27 +1755,6 @@ ua_qms_seed_default_units($conn);
                 submitBtn.innerHTML = originalText;
             });
         });
-
-        // Diagnostic logger
-        setTimeout(() => {
-            const aySelect = document.getElementById('active-system-ay');
-            const customContainer = document.getElementById('custom-container-active-system-ay');
-            const logData = {
-                url: window.location.href,
-                aySelectExists: !!aySelect,
-                aySelectHtml: aySelect ? aySelect.innerHTML : 'null',
-                aySelectOptionsCount: aySelect ? aySelect.options.length : 0,
-                aySelectValue: aySelect ? aySelect.value : 'null',
-                customContainerExists: !!customContainer,
-                customContainerHtml: customContainer ? customContainer.innerHTML : 'null',
-                cookies: document.cookie
-            };
-            fetch('../../api/debug_helper.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ log: JSON.stringify(logData, null, 2) })
-            }).catch(e => {});
-        }, 1500);
     </script>
 </body>
 </html>

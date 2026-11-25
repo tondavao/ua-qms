@@ -2,6 +2,8 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/system_settings.php';
+require_once __DIR__ . '/../includes/schema_helpers.php';
+ua_qms_ensure_target_office_table($conn);
 
 header('Content-Type: application/json');
 
@@ -47,6 +49,55 @@ function notifyAllUnits($conn, $title, $message, $type, $target_url = null, $tar
     return false;
 }
 
+// Notify only specific offices (used for CAR deadlines targeted to selected units)
+function notifySpecificOffices($conn, $office_ids, $title, $message, $type, $target_url = null, $target_type = null) {
+    $clean_ids = array_values(array_unique(array_filter(array_map('intval', (array)$office_ids), function($v) { return $v > 0; })));
+    if (empty($clean_ids)) {
+        return notifyAllUnits($conn, $title, $message, $type, $target_url, $target_type);
+    }
+    $stmt = $conn->prepare("INSERT INTO notifications (title, message, type, target_url, target_type) VALUES (?, ?, ?, ?, ?)");
+    $stmt->bind_param("sssss", $title, $message, $type, $target_url, $target_type);
+    if ($stmt->execute()) {
+        $notif_id = $conn->insert_id;
+        $in_list = implode(',', $clean_ids);
+        $res = $conn->query("SELECT user_id FROM users WHERE role IN ('Dean', 'Office') AND status = 'Active' AND office_id IN ($in_list)");
+        if ($res) {
+            $stmt_user = $conn->prepare("INSERT INTO user_notifications (user_id, notification_id) VALUES (?, ?)");
+            while ($row = $res->fetch_assoc()) {
+                $uid = (int)$row['user_id'];
+                $stmt_user->bind_param("ii", $uid, $notif_id);
+                $stmt_user->execute();
+            }
+            $stmt_user->close();
+        }
+        return true;
+    }
+    return false;
+}
+
+function saveTargetOffices($conn, $target_id, $office_ids) {
+    $target_id = (int)$target_id;
+    $stmt_del = $conn->prepare("DELETE FROM target_submission_offices WHERE target_id = ?");
+    if ($stmt_del) {
+        $stmt_del->bind_param("i", $target_id);
+        $stmt_del->execute();
+        $stmt_del->close();
+    }
+    $clean_ids = array_values(array_unique(array_filter(array_map('intval', (array)$office_ids), function($v) { return $v > 0; })));
+    if (empty($clean_ids)) {
+        return [];
+    }
+    $stmt_ins = $conn->prepare("INSERT IGNORE INTO target_submission_offices (target_id, office_id) VALUES (?, ?)");
+    if ($stmt_ins) {
+        foreach ($clean_ids as $oid) {
+            $stmt_ins->bind_param("ii", $target_id, $oid);
+            $stmt_ins->execute();
+        }
+        $stmt_ins->close();
+    }
+    return $clean_ids;
+}
+
 function is_valid_year($year) {
     // Accepts academic year ranges like 2026-2027
     return preg_match('/^\d{4}-\d{4}$/', (string)$year) === 1;
@@ -78,21 +129,49 @@ switch ($action) {
         break;
 
     case 'set_active_year':
-        $id = $input['ay_id'] ?? 0;
+        $id = (int)($input['ay_id'] ?? 0);
+        if (!$id) {
+            echo json_encode(['success' => false, 'error' => 'Invalid academic year ID.']);
+            break;
+        }
+        $stmt_find = $conn->prepare("SELECT year_range FROM academic_years WHERE ay_id = ?");
+        $stmt_find->bind_param("i", $id);
+        $stmt_find->execute();
+        $row = $stmt_find->get_result()->fetch_assoc();
+        $stmt_find->close();
+
+        if (!$row) {
+            echo json_encode(['success' => false, 'error' => 'Academic year not found.']);
+            break;
+        }
+
+        $year_val = $row['year_range'];
+        $default_quarter = '1st Quarter';
+
         $conn->query("UPDATE academic_years SET is_active = 0");
         $stmt = $conn->prepare("UPDATE academic_years SET is_active = 1 WHERE ay_id = ?");
         $stmt->bind_param("i", $id);
         if ($stmt->execute()) {
-            // Sync with system_settings for backward compatibility
-            $res = $conn->query("SELECT year_range FROM academic_years WHERE ay_id = $id");
-            $row = $res->fetch_assoc();
-            $year_val = $row['year_range'];
-            $stmt2 = $conn->prepare("UPDATE system_settings SET setting_value = ? WHERE setting_key = 'active_academic_year'");
-            $stmt2->bind_param("s", $year_val);
-            $stmt2->execute();
-            
-            addLog($conn, "Set Active Academic Year", "Set to $year_val");
-            echo json_encode(['success' => true]);
+            // Sync active year AND reset active quarter to 1st Quarter
+            ua_qms_upsert_system_setting($conn, 'active_academic_year', $year_val);
+            ua_qms_upsert_system_setting($conn, 'active_semester', $default_quarter);
+
+            $conn->query("UPDATE semesters SET is_active = 0");
+            $stmt_sem = $conn->prepare("UPDATE semesters SET is_active = 1 WHERE semester_name = ?");
+            if ($stmt_sem) {
+                $stmt_sem->bind_param("s", $default_quarter);
+                $stmt_sem->execute();
+                $stmt_sem->close();
+            }
+
+            addLog($conn, "Set Active Academic Year", "Set to $year_val ($default_quarter)");
+            echo json_encode([
+                'success' => true,
+                'active_year' => $year_val,
+                'active_semester' => $default_quarter
+            ]);
+        } else {
+            echo json_encode(['success' => false, 'error' => $conn->error]);
         }
         break;
 
@@ -172,11 +251,41 @@ switch ($action) {
             $where
             ORDER BY ts.year DESC,
                 FIELD(ts.quarter, '1st Quarter', '2nd Quarter', '3rd Quarter', '4th Quarter'),
-                dt.doc_code ASC
+                dt.doc_code ASC,
+                ts.target_id DESC
         ");
         $deadlines = [];
-        while ($row = $result->fetch_assoc()) $deadlines[] = $row;
-        echo json_encode(['success' => true, 'data' => $deadlines]);
+        $target_ids = [];
+        while ($row = $result->fetch_assoc()) {
+            $row['target_office_ids'] = [];
+            $row['target_offices'] = [];
+            $deadlines[(int)$row['target_id']] = $row;
+            $target_ids[] = (int)$row['target_id'];
+        }
+        if (!empty($target_ids)) {
+            $id_list = implode(',', $target_ids);
+            $tso_res = $conn->query("
+                SELECT tso.target_id, o.office_id, o.office_code, o.office_name
+                FROM target_submission_offices tso
+                JOIN offices o ON o.office_id = tso.office_id
+                WHERE tso.target_id IN ($id_list)
+                ORDER BY o.office_name ASC
+            ");
+            if ($tso_res) {
+                while ($tso = $tso_res->fetch_assoc()) {
+                    $tid = (int)$tso['target_id'];
+                    if (isset($deadlines[$tid])) {
+                        $deadlines[$tid]['target_office_ids'][] = (int)$tso['office_id'];
+                        $deadlines[$tid]['target_offices'][] = [
+                            'office_id' => (int)$tso['office_id'],
+                            'office_code' => $tso['office_code'],
+                            'office_name' => $tso['office_name'],
+                        ];
+                    }
+                }
+            }
+        }
+        echo json_encode(['success' => true, 'data' => array_values($deadlines)]);
         break;
 
     case 'add_submission_deadline':
@@ -184,6 +293,7 @@ switch ($action) {
         $quarter = $input['quarter'] ?? '';
         $year = $input['year'] ?? '';
         $deadline = $input['deadline'] ?? '';
+        $office_ids = is_array($input['office_ids'] ?? null) ? $input['office_ids'] : [];
         $valid_quarters = ['1st Quarter', '2nd Quarter', '3rd Quarter', '4th Quarter'];
 
         if (!$doc_type_id_raw || !in_array($quarter, $valid_quarters, true) || !is_valid_year($year) || !$deadline) {
@@ -192,7 +302,7 @@ switch ($action) {
         }
 
         if ($doc_type_id_raw === 'all') {
-            // Get all document types
+            // Get all required/standard document types (exclude optional CAR if user wants specific units, or include all)
             $dt_res = $conn->query("SELECT doc_type_id, doc_code FROM document_types");
             if ($dt_res) {
                 $conn->begin_transaction();
@@ -200,7 +310,10 @@ switch ($action) {
                     while ($dt_row = $dt_res->fetch_assoc()) {
                         $doc_id = (int)$dt_row['doc_type_id'];
                         // Delete existing to prevent duplication
-                        $conn->query("DELETE FROM target_submissions WHERE doc_type_id = $doc_id AND quarter = '$quarter' AND year = '$year'");
+                        $stmt_del = $conn->prepare("DELETE FROM target_submissions WHERE doc_type_id = ? AND quarter = ? AND year = ?");
+                        $stmt_del->bind_param("iss", $doc_id, $quarter, $year);
+                        $stmt_del->execute();
+                        $stmt_del->close();
                         
                         $stmt = $conn->prepare("INSERT INTO target_submissions (doc_type_id, quarter, year, deadline) VALUES (?, ?, ?, ?)");
                         $stmt->bind_param("isss", $doc_id, $quarter, $year, $deadline);
@@ -225,24 +338,43 @@ switch ($action) {
             }
         } else {
             $doc_type_id = (int)$doc_type_id_raw;
-            // Delete existing to prevent duplication
-            $conn->query("DELETE FROM target_submissions WHERE doc_type_id = $doc_type_id AND quarter = '$quarter' AND year = '$year'");
+            $doc_code = "Document";
+            $dt_res = $conn->query("SELECT doc_code FROM document_types WHERE doc_type_id = $doc_type_id");
+            if ($dt_res && $dt_row = $dt_res->fetch_assoc()) {
+                $doc_code = $dt_row['doc_code'];
+            }
+            $is_car = (strtoupper(trim($doc_code)) === 'CAR');
+            $clean_office_ids = $is_car ? array_values(array_unique(array_filter(array_map('intval', $office_ids), function($v) { return $v > 0; }))) : [];
+
+            // For non-CAR or All-Units deadlines, replace existing duplicate for same doc_type + quarter + year.
+            // For CAR targeting specific units, allow multiple targeted CAR requests per quarter.
+            if (!$is_car || empty($clean_office_ids)) {
+                $stmt_del = $conn->prepare("DELETE FROM target_submissions WHERE doc_type_id = ? AND quarter = ? AND year = ?");
+                $stmt_del->bind_param("iss", $doc_type_id, $quarter, $year);
+                $stmt_del->execute();
+                $stmt_del->close();
+            }
 
             $stmt = $conn->prepare("INSERT INTO target_submissions (doc_type_id, quarter, year, deadline) VALUES (?, ?, ?, ?)");
             $stmt->bind_param("isss", $doc_type_id, $quarter, $year, $deadline);
             if ($stmt->execute()) {
-                // Retrieve document type code
-                $doc_code = "Document";
-                $dt_res = $conn->query("SELECT doc_code FROM document_types WHERE doc_type_id = $doc_type_id");
-                if ($dt_res && $dt_row = $dt_res->fetch_assoc()) {
-                    $doc_code = $dt_row['doc_code'];
+                $new_target_id = $conn->insert_id;
+                $saved_offices = [];
+                if ($is_car && !empty($clean_office_ids)) {
+                    $saved_offices = saveTargetOffices($conn, $new_target_id, $clean_office_ids);
                 }
+
                 $deadline_formatted = date('F d, Y', strtotime($deadline));
                 $notif_title = "New Deadline Set: $doc_code";
                 $notif_msg = "A new submission deadline has been set for $doc_code ($quarter $year) on $deadline_formatted. Please submit your files accordingly.";
-                notifyAllUnits($conn, $notif_title, $notif_msg, 'Deadline', 'dashboard/dean/submit_document.php', 'submission');
+                if (!empty($saved_offices)) {
+                    notifySpecificOffices($conn, $saved_offices, $notif_title, $notif_msg, 'Deadline', 'dashboard/dean/submit_document.php?doc_type_id=' . $doc_type_id, 'submission');
+                    addLog($conn, "Added CAR Submission Deadline", "Added CAR deadline for " . count($saved_offices) . " specific unit(s), $quarter $year: $deadline");
+                } else {
+                    notifyAllUnits($conn, $notif_title, $notif_msg, 'Deadline', 'dashboard/dean/submit_document.php', 'submission');
+                    addLog($conn, "Added Submission Deadline", "Added deadline for document type ID $doc_type_id, $quarter $year: $deadline");
+                }
 
-                addLog($conn, "Added Submission Deadline", "Added deadline for document type ID $doc_type_id, $quarter $year: $deadline");
                 echo json_encode(['success' => true]);
             } else {
                 echo json_encode(['success' => false, 'error' => $conn->error]);
@@ -256,6 +388,7 @@ switch ($action) {
         $quarter = $input['quarter'] ?? '';
         $year = $input['year'] ?? '';
         $deadline = $input['deadline'] ?? '';
+        $office_ids = is_array($input['office_ids'] ?? null) ? $input['office_ids'] : [];
         $valid_quarters = ['1st Quarter', '2nd Quarter', '3rd Quarter', '4th Quarter'];
 
         if (!$target_id || !$doc_type_id || !in_array($quarter, $valid_quarters, true) || !is_valid_year($year) || !$deadline) {
@@ -272,12 +405,20 @@ switch ($action) {
             if ($dt_res && $dt_row = $dt_res->fetch_assoc()) {
                 $doc_code = $dt_row['doc_code'];
             }
+            $is_car = (strtoupper(trim($doc_code)) === 'CAR');
+            $saved_offices = saveTargetOffices($conn, $target_id, $is_car ? $office_ids : []);
+
             $deadline_formatted = date('F d, Y', strtotime($deadline));
             $notif_title = "Deadline Updated: $doc_code";
             $notif_msg = "The submission deadline for $doc_code ($quarter $year) has been updated to $deadline_formatted. Please check your submissions.";
-            notifyAllUnits($conn, $notif_title, $notif_msg, 'Deadline', 'dashboard/dean/submit_document.php', 'submission');
+            if (!empty($saved_offices)) {
+                notifySpecificOffices($conn, $saved_offices, $notif_title, $notif_msg, 'Deadline', 'dashboard/dean/submit_document.php?doc_type_id=' . $doc_type_id, 'submission');
+                addLog($conn, "Edited CAR Submission Deadline", "Updated deadline ID $target_id for " . count($saved_offices) . " unit(s), $quarter $year: $deadline");
+            } else {
+                notifyAllUnits($conn, $notif_title, $notif_msg, 'Deadline', 'dashboard/dean/submit_document.php', 'submission');
+                addLog($conn, "Edited Submission Deadline", "Updated deadline ID $target_id to $quarter $year: $deadline");
+            }
 
-            addLog($conn, "Edited Submission Deadline", "Updated deadline ID $target_id to $quarter $year: $deadline");
             echo json_encode(['success' => true]);
         } else {
             echo json_encode(['success' => false, 'error' => $conn->error]);

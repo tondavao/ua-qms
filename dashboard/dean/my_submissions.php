@@ -2,6 +2,8 @@
 session_start();
 require_once __DIR__ . "/../../config/db.php";
 require_once __DIR__ . "/../../includes/system_settings.php";
+require_once __DIR__ . "/../../includes/schema_helpers.php";
+ua_qms_ensure_document_annotations_table($conn);
 
 if (!isset($_SESSION['role']) || ($_SESSION['role'] != 'Dean' && $_SESSION['role'] != 'Office')) {
     header('Location: ../../index.php');
@@ -57,12 +59,15 @@ $sql = "SELECT
             dt.doc_code,
             dt.description,
             dr.remarks AS review_remarks,
-            dr.reviewed_at
+            dr.reviewed_at,
+            (da.annotation_id IS NOT NULL) AS has_edits
         FROM documents d
         JOIN document_types dt 
             ON d.doc_type_id = dt.doc_type_id
         LEFT JOIN document_reviews dr 
             ON d.document_id = dr.document_id
+        LEFT JOIN document_annotations da
+            ON d.document_id = da.document_id
         WHERE d.office_id = ?";
 
 $params = [$office_id];
@@ -81,9 +86,13 @@ if ($selected_sem !== 'All') {
 }
 
 if ($selected_status !== 'All') {
-    $sql .= " AND d.status = ?";
-    $params[] = $selected_status;
-    $types .= "s";
+    if ($selected_status === 'Archived') {
+        $sql .= " AND d.status = 'Archived'";
+    } else {
+        $sql .= " AND (d.status = ? OR d.status = 'Archived')";
+        $params[] = $selected_status;
+        $types .= "s";
+    }
 }
 
 if ($selected_dt !== 'All') {
@@ -109,16 +118,77 @@ $stmt->execute();
 
 $result = $stmt->get_result();
 
-// Group by document to only show latest review
-$docs = [];
-
-while($row = $result->fetch_assoc()) {
-    if (!isset($docs[$row['document_id']])) {
-        $docs[$row['document_id']] = $row;
+if (!function_exists('getRevisionText')) {
+    function getRevisionText($verNumber) {
+        $ver = intval($verNumber ?? 1);
+        if ($ver <= 1) {
+            return 'Original Submission';
+        }
+        return 'Revision ' . ($ver - 1);
     }
 }
 
-$submissions = array_values($docs);
+// Group by document series (doc_type_id + academic_year + semester) to support expandable version history
+$unique_doc_rows = [];
+while($row = $result->fetch_assoc()) {
+    if (!isset($unique_doc_rows[$row['document_id']])) {
+        $unique_doc_rows[$row['document_id']] = $row;
+    }
+}
+
+$series_groups = [];
+foreach ($unique_doc_rows as $doc_row) {
+    $series_key = $doc_row['doc_type_id'] . '_' . md5(($doc_row['academic_year'] ?? '') . '_' . ($doc_row['semester'] ?? ''));
+    if (!isset($series_groups[$series_key])) {
+        $series_groups[$series_key] = [];
+    }
+    $series_groups[$series_key][] = $doc_row;
+}
+
+$submissions = [];
+foreach ($series_groups as $s_key => $versions) {
+    usort($versions, function($a, $b) {
+        $vA = intval($a['version_number'] ?? 1);
+        $vB = intval($b['version_number'] ?? 1);
+        if ($vA === $vB) {
+            return strtotime($b['submitted_at']) <=> strtotime($a['submitted_at']);
+        }
+        return $vB <=> $vA;
+    });
+
+    $primary = $versions[0];
+
+    // When status filter is active (and not 'All' or 'Archived'), ensure the primary row matches the status
+    if ($selected_status !== 'All' && $selected_status !== 'Archived') {
+        if ($primary['status'] !== $selected_status) {
+            $matching_index = null;
+            foreach ($versions as $idx => $v) {
+                if ($v['status'] === $selected_status) {
+                    $matching_index = $idx;
+                    break;
+                }
+            }
+            if ($matching_index === null) {
+                continue;
+            }
+            $primary = $versions[$matching_index];
+            $prev_versions = [];
+            foreach ($versions as $idx => $v) {
+                if ($idx !== $matching_index) {
+                    $prev_versions[] = $v;
+                }
+            }
+            $primary['previous_versions'] = $prev_versions;
+            $primary['series_id'] = $s_key;
+            $submissions[] = $primary;
+            continue;
+        }
+    }
+
+    $primary['previous_versions'] = array_slice($versions, 1);
+    $primary['series_id'] = $s_key;
+    $submissions[] = $primary;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -133,6 +203,7 @@ $submissions = array_values($docs);
     <script src="../../assets/js/messaging.js" defer></script>
     <script src="../../assets/js/notifications.js" defer></script>
     <script src="../../assets/js/universal-file-viewer.js" defer></script>
+    <script src="../../assets/js/document-editor.js" defer></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
         body { font-family: 'Plus Jakarta Sans', sans-serif; }
@@ -276,6 +347,7 @@ $submissions = array_values($docs);
                                     <option value="Awaiting Review" <?php echo $selected_status === 'Awaiting Review' ? 'selected' : ''; ?>>Awaiting Review</option>
                                     <option value="Approved" <?php echo $selected_status === 'Approved' ? 'selected' : ''; ?>>Approved</option>
                                     <option value="Revision" <?php echo $selected_status === 'Revision' ? 'selected' : ''; ?>>Revision</option>
+                                    <option value="Archived" <?php echo $selected_status === 'Archived' ? 'selected' : ''; ?>>Archived (Superseded)</option>
                                 </select>
                             </div>
 
@@ -299,20 +371,19 @@ $submissions = array_values($docs);
                             </a>
                         </div>
                         
-                        <div class="overflow-x-auto">
-                            <table class="w-full text-left">
-                                <thead class="bg-gray-50 text-gray-500 text-xs uppercase font-bold">
+                        <div class="overflow-x-auto w-full">
+                            <table class="w-full text-left border-collapse min-w-[650px] md:min-w-full">
+                                <thead class="bg-gray-50 text-gray-500 text-xs uppercase font-bold border-b border-gray-100">
                                     <tr>
-                                        <th class="px-6 py-4">Document Type</th>
-                                        <th class="px-6 py-4">Period</th>
-                                        <th class="px-6 py-4">File Name</th>
-                                        <th class="px-6 py-4">Submitted At</th>
-                                        <th class="px-6 py-4">Status</th>
-
-                                        <th class="px-6 py-4 no-print">Actions</th>
+                                        <th class="px-3.5 py-3 whitespace-nowrap">Document Type</th>
+                                        <th class="px-3.5 py-3 whitespace-nowrap">Period</th>
+                                        <th class="px-3.5 py-3 whitespace-nowrap">File Name</th>
+                                        <th class="px-3.5 py-3 whitespace-nowrap">Submitted At</th>
+                                        <th class="px-3.5 py-3 whitespace-nowrap">Status</th>
+                                        <th class="px-3.5 py-3 no-print text-left whitespace-nowrap">Actions</th>
                                     </tr>
                                 </thead>
-                                <tbody class="divide-y divide-gray-100" id="submissionsTableBody">
+                                <tbody class="divide-y divide-gray-100 text-xs md:text-sm" id="submissionsTableBody">
                                     <?php if(empty($submissions)): ?>
                                         <tr>
                                             <td colspan="6" class="px-6 py-12 text-center text-gray-500">
@@ -325,53 +396,80 @@ $submissions = array_values($docs);
                                                 $rowBgClass = $sub['status'] === 'Revision' ? 'bg-red-50/40 hover:bg-red-50/60 border-l-4 border-l-[#800000]' : 'hover:bg-gray-50/50';
                                             ?>
                                             <tr class="transition-colors submission-row <?php echo $rowBgClass; ?>" data-doc-id="<?php echo $sub['document_id']; ?>">
-                                                <td class="px-6 py-4 whitespace-normal max-w-[200px]">
-                                                    <span class="font-bold text-gray-900 leading-tight block"><?php echo htmlspecialchars($sub['description'] . ' (' . $sub['doc_code'] . ')'); ?></span>
+                                                <td class="px-3.5 py-3 max-w-[150px] md:max-w-[220px]">
+                                                    <span class="font-bold text-gray-900 leading-snug block text-xs md:text-sm break-words"><?php echo htmlspecialchars($sub['description'] . ' (' . $sub['doc_code'] . ')'); ?></span>
                                                 </td>
-                                                <td class="px-6 py-4 text-sm text-gray-600 whitespace-nowrap">
-                                                    <span class="font-semibold text-gray-800"><?php echo htmlspecialchars(($sub['semester'] ?? 'N/A') . ' ' . ($sub['academic_year'] ?? 'N/A')); ?></span>
+                                                <td class="px-3.5 py-3 text-gray-600 whitespace-nowrap">
+                                                    <span class="font-semibold text-gray-800 text-xs md:text-sm"><?php echo htmlspecialchars(($sub['semester'] ?? 'N/A') . ' ' . ($sub['academic_year'] ?? 'N/A')); ?></span>
                                                 </td>
-                                                <td class="px-6 py-4 text-sm text-gray-600 whitespace-nowrap">
-                                                    <span class="truncate max-w-[130px] inline-block align-middle" title="<?php echo htmlspecialchars($sub['file_name']); ?>"><?php echo htmlspecialchars($sub['file_name']); ?></span>
-                                                    <?php if(isset($sub['version_number']) && $sub['version_number'] > 1): ?>
-                                                        <span class="bg-[#800000] text-white text-[10px] font-bold px-2 py-0.5 rounded-md ml-2 shadow-sm border border-red-900 inline-block align-middle"><i class="fas fa-code-branch mr-1"></i>Version <?php echo htmlspecialchars($sub['version_number']); ?></span>
-                                                    <?php endif; ?>
+                                                <td class="px-3.5 py-3 text-gray-600">
+                                                    <div class="flex flex-wrap md:inline-flex items-center gap-1.5 md:whitespace-nowrap">
+                                                        <span class="font-medium text-gray-900 truncate max-w-[120px] md:max-w-[160px] inline-block align-middle" title="<?php echo htmlspecialchars($sub['file_name']); ?>"><?php echo htmlspecialchars($sub['file_name']); ?></span>
+                                                        <?php if(isset($sub['version_number']) && $sub['version_number'] > 1): ?>
+                                                            <span class="bg-[#800000] text-white text-[10px] font-bold px-2 py-0.5 rounded-md shadow-sm border border-red-900 whitespace-nowrap shrink-0" title="Version <?php echo htmlspecialchars($sub['version_number']); ?>">
+                                                                <i class="fas fa-history mr-1 text-[9px]"></i><?php echo getRevisionText($sub['version_number']); ?>
+                                                            </span>
+                                                        <?php else: ?>
+                                                            <span class="bg-gray-100 text-gray-700 text-[10px] font-bold px-2 py-0.5 rounded-md border border-gray-200 whitespace-nowrap shrink-0">
+                                                                <i class="fas fa-file-alt mr-1 text-[9px]"></i>Original Submission
+                                                            </span>
+                                                        <?php endif; ?>
+                                                    </div>
                                                 </td>
-                                                <td class="px-6 py-4 text-sm text-gray-500 whitespace-nowrap">
+                                                <td class="px-3.5 py-3 text-gray-600 text-xs whitespace-nowrap">
                                                     <?php echo date('M d, Y, g:i A', strtotime($sub['submitted_at'])); ?>
                                                 </td>
-                                                <td class="px-6 py-4 whitespace-nowrap">
+                                                <td class="px-3.5 py-3 whitespace-nowrap">
                                                     <?php 
                                                         $statusClass = 'badge-awaiting';
                                                         if($sub['status'] == 'Approved') $statusClass = 'badge-approved';
                                                         if($sub['status'] == 'Revision') $statusClass = 'badge-revision';
+                                                        if($sub['status'] == 'Archived') $statusClass = 'bg-gray-100 text-gray-700 border border-gray-200';
                                                     ?>
-                                                    <span class="badge <?php echo $statusClass; ?>">
-                                                        <?php echo $sub['status']; ?>
-                                                    </span>
+                                                    <span class="badge <?php echo $statusClass; ?> whitespace-nowrap">
+                                                        <?php echo $sub['status'] === 'Archived' ? 'Archived (Superseded)' : $sub['status']; ?>
+                                                     </span>
                                                 </td>
 
-                                                <td class="px-6 py-4 no-print whitespace-nowrap">
-                                                    <div class="flex gap-1.5 items-center flex-nowrap">
+                                                <td class="px-3.5 py-3 no-print">
+                                                    <div class="flex flex-wrap md:inline-flex items-center gap-1.5 md:flex-nowrap">
                                                         <button 
                                                             onclick="openUniversalFileViewer(
                                                                 '<?php echo htmlspecialchars($sub['file_path']); ?>',
                                                                 '<?php echo htmlspecialchars($sub['preview_path'] ?? $sub['file_path']); ?>',
                                                                 '<?php echo htmlspecialchars($sub['file_name']); ?>'
                                                             )"
-                                                            class="px-2.5 py-1.5 bg-[#800000] text-white text-[11px] font-bold rounded-lg hover:bg-red-950 hover:shadow-sm transition-all uppercase inline-flex items-center justify-center gap-1">
-                                                            <i class="fas fa-eye text-[8px]"></i> PREVIEW
+                                                            class="px-2.5 py-1.5 bg-[#800000] text-white text-[11px] font-bold rounded-lg hover:bg-red-950 hover:shadow-sm transition-all uppercase inline-flex items-center justify-center gap-1 whitespace-nowrap">
+                                                            <i class="fas fa-eye text-[9px]"></i> PREVIEW
                                                         </button>
+
+                                                        <?php if(!empty($sub['has_edits'])): ?>
+                                                            <button type="button"
+                                                                onclick="openDocumentEditor(<?php echo (int)$sub['document_id']; ?>, 'view')"
+                                                                class="px-2.5 py-1.5 bg-amber-100 text-amber-900 border border-amber-300 text-[11px] font-bold rounded-lg hover:bg-amber-200 transition-all uppercase inline-flex items-center justify-center gap-1 whitespace-nowrap"
+                                                                title="View QMO reviewer highlights and edits">
+                                                                <i class="fas fa-highlighter text-[9px]"></i> VIEW EDITS
+                                                            </button>
+                                                        <?php endif; ?>
 
                                                         <?php if($sub['status'] == 'Revision'): ?>
                                                             <a href="submit_document.php?re-submit=<?php echo $sub['document_id']; ?>" 
-                                                               class="px-2.5 py-1.5 bg-[#800000] text-white text-[11px] font-bold rounded-lg hover:bg-red-950 hover:shadow-sm transition-all uppercase inline-flex items-center justify-center gap-1">
-                                                                <i class="fas fa-edit text-[8px]"></i> RE-SUBMIT
+                                                               class="px-2.5 py-1.5 bg-[#800000] text-white text-[11px] font-bold rounded-lg hover:bg-red-950 hover:shadow-sm transition-all uppercase inline-flex items-center justify-center gap-1 whitespace-nowrap">
+                                                                <i class="fas fa-edit text-[9px]"></i> RE-SUBMIT
                                                             </a>
                                                         <?php elseif($sub['status'] == 'Awaiting Review'): ?>
                                                             <button onclick="confirmDeleteSubmission(<?php echo $sub['document_id']; ?>)" 
-                                                                    class="px-2.5 py-1.5 bg-red-50 text-[#800000] border border-red-200 text-[11px] font-bold rounded-lg hover:bg-[#800000] hover:text-white transition-all uppercase inline-flex items-center justify-center gap-1">
-                                                                <i class="fas fa-trash-alt text-[8px]"></i> DELETE
+                                                                    class="px-2.5 py-1.5 bg-red-50 text-[#800000] border border-red-200 text-[11px] font-bold rounded-lg hover:bg-[#800000] hover:text-white transition-all uppercase inline-flex items-center justify-center gap-1 whitespace-nowrap">
+                                                                <i class="fas fa-trash-alt text-[9px]"></i> DELETE
+                                                            </button>
+                                                        <?php endif; ?>
+
+                                                        <?php if(!empty($sub['previous_versions'])): ?>
+                                                            <button type="button" 
+                                                                    onclick="toggleVersionHistory('<?php echo htmlspecialchars($sub['series_id']); ?>')" 
+                                                                    class="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-[11px] font-bold rounded-lg transition-all uppercase inline-flex items-center justify-center gap-1 shadow-xs cursor-pointer whitespace-nowrap">
+                                                                <i class="fas fa-history text-[9px] text-amber-700"></i> REVISIONS (<?php echo count($sub['previous_versions']); ?>)
+                                                                <i class="fas fa-chevron-down text-[8px] transition-transform duration-200" id="chevron-<?php echo htmlspecialchars($sub['series_id']); ?>"></i>
                                                             </button>
                                                         <?php endif; ?>
                                                     </div>
@@ -379,10 +477,80 @@ $submissions = array_values($docs);
                                             </tr>
                                             <?php if(!empty($sub['review_remarks'])): ?>
                                                 <tr class="bg-gray-50/30">
-                                                    <td colspan="6" class="px-6 py-3">
+                                                    <td colspan="6" class="px-3.5 py-2.5">
                                                         <div class="flex items-start gap-2 text-xs">
                                                             <span class="font-bold text-gray-500">Reviewer Remarks:</span>
                                                             <span class="text-gray-600 italic"><?php echo htmlspecialchars($sub['review_remarks']); ?></span>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            <?php endif; ?>
+
+                                            <?php if(!empty($sub['previous_versions'])): ?>
+                                                <tr id="history-<?php echo htmlspecialchars($sub['series_id']); ?>" class="hidden bg-slate-50/90 border-t border-b border-gray-200 version-history-row" data-series-id="<?php echo htmlspecialchars($sub['series_id']); ?>">
+                                                    <td colspan="6" class="px-4 py-4">
+                                                        <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden p-4">
+                                                            <div class="flex items-center justify-between pb-3 border-b border-gray-100 mb-3">
+                                                                <span class="text-xs font-bold text-gray-800 flex items-center gap-2">
+                                                                    <i class="fas fa-history text-ua-maroon"></i> Previous Version History — <?php echo htmlspecialchars($sub['description'] . ' (' . $sub['doc_code'] . ')'); ?>
+                                                                </span>
+                                                                <span class="text-[11px] font-semibold text-gray-500">
+                                                                    <?php echo count($sub['previous_versions']); ?> Archived <?php echo count($sub['previous_versions']) === 1 ? 'Revision' : 'Revisions'; ?>
+                                                                </span>
+                                                            </div>
+                                                            
+                                                            <div class="overflow-x-auto">
+                                                                <table class="w-full text-left">
+                                                                    <thead>
+                                                                        <tr class="text-[10px] font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100">
+                                                                            <th class="pb-2">Revision / Version</th>
+                                                                            <th class="pb-2">File Name</th>
+                                                                            <th class="pb-2">Submitted At</th>
+                                                                            <th class="pb-2">Status</th>
+                                                                            <th class="pb-2 text-right">Action</th>
+                                                                        </tr>
+                                                                    </thead>
+                                                                    <tbody class="divide-y divide-gray-100 text-xs">
+                                                                        <?php foreach($sub['previous_versions'] as $prev): ?>
+                                                                            <tr class="hover:bg-amber-50/30 transition-colors">
+                                                                                <td class="py-2.5 font-bold text-gray-800">
+                                                                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-100 text-gray-700 rounded text-[10px] border border-gray-200">
+                                                                                        <i class="fas fa-file-invoice text-gray-500 text-[9px]"></i>
+                                                                                        <?php echo getRevisionText($prev['version_number']); ?> (v<?php echo htmlspecialchars($prev['version_number']); ?>)
+                                                                                    </span>
+                                                                                </td>
+                                                                                <td class="py-2.5 font-medium text-gray-700 max-w-[200px] truncate" title="<?php echo htmlspecialchars($prev['file_name']); ?>">
+                                                                                    <?php echo htmlspecialchars($prev['file_name']); ?>
+                                                                                </td>
+                                                                                <td class="py-2.5 text-gray-500 whitespace-nowrap">
+                                                                                    <?php echo date('M d, Y, g:i A', strtotime($prev['submitted_at'])); ?>
+                                                                                </td>
+                                                                                <td class="py-2.5">
+                                                                                    <span class="bg-gray-100 text-gray-600 border border-gray-200 text-[10px] font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                                                                                        <i class="fas fa-archive text-gray-400 text-[9px]"></i> Archived (Superseded)
+                                                                                    </span>
+                                                                                </td>
+                                                                                <td class="py-2.5 text-right">
+                                                                                    <div class="inline-flex items-center gap-1.5">
+                                                                                        <?php if (!empty($prev['has_edits'])): ?>
+                                                                                            <button type="button" onclick="openDocumentEditor(<?php echo (int)$prev['document_id']; ?>, 'view')" class="px-2.5 py-1 bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-bold rounded-lg hover:bg-amber-200 transition uppercase inline-flex items-center gap-1">
+                                                                                                <i class="fas fa-highlighter text-[8px]"></i> Edits
+                                                                                            </button>
+                                                                                        <?php endif; ?>
+                                                                                        <button onclick="openUniversalFileViewer(
+                                                                                            '<?php echo htmlspecialchars($prev['file_path']); ?>',
+                                                                                            '<?php echo htmlspecialchars($prev['preview_path'] ?? $prev['file_path']); ?>',
+                                                                                            '<?php echo htmlspecialchars($prev['file_name']); ?>'
+                                                                                        )" class="px-2.5 py-1 bg-[#800000] text-white text-[10px] font-bold rounded-lg hover:bg-red-950 transition uppercase inline-flex items-center gap-1">
+                                                                                            <i class="fas fa-eye text-[8px]"></i> Preview
+                                                                                        </button>
+                                                                                    </div>
+                                                                                </td>
+                                                                            </tr>
+                                                                        <?php endforeach; ?>
+                                                                    </tbody>
+                                                                </table>
+                                                            </div>
                                                         </div>
                                                     </td>
                                                 </tr>
@@ -443,8 +611,14 @@ $submissions = array_values($docs);
             }
         }
 
-        // Real-time auto-update submissions list without page refresh
-        setInterval(async () => {
+        // Real-time auto-update submissions list without page refresh (guarded for PJAX)
+        if (window._deanSubmissionsInterval) clearInterval(window._deanSubmissionsInterval);
+        window._deanSubmissionsInterval = setInterval(async () => {
+            if (!document.getElementById('submissionsTableBody')) {
+                clearInterval(window._deanSubmissionsInterval);
+                window._deanSubmissionsInterval = null;
+                return;
+            }
             try {
                 // If modal is currently open, don't auto-refresh to prevent flickering or losing state
                 const deleteModal = document.getElementById('delete-confirm-modal');
@@ -462,6 +636,7 @@ $submissions = array_values($docs);
                 const oldTbody = document.getElementById('submissionsTableBody');
                 if (newTbody && oldTbody) {
                     oldTbody.innerHTML = newTbody.innerHTML;
+                    restoreExpandedVersionRows();
                 }
                 if (typeof lucide !== 'undefined') {
                     lucide.createIcons();
@@ -470,6 +645,42 @@ $submissions = array_values($docs);
                 console.error('Error auto-refreshing submissions:', err);
             }
         }, 5000);
+
+        // Version History Expand/Collapse State Handler
+        window.expandedVersionRows = window.expandedVersionRows || {};
+
+        function toggleVersionHistory(seriesId) {
+            const targetRow = document.getElementById('history-' + seriesId);
+            const chevronIcon = document.getElementById('chevron-' + seriesId);
+            if (!targetRow) return;
+
+            if (targetRow.classList.contains('hidden')) {
+                targetRow.classList.remove('hidden');
+                if (chevronIcon) chevronIcon.classList.add('rotate-180');
+                window.expandedVersionRows[seriesId] = true;
+            } else {
+                targetRow.classList.add('hidden');
+                if (chevronIcon) chevronIcon.classList.remove('rotate-180');
+                window.expandedVersionRows[seriesId] = false;
+            }
+        }
+
+        function restoreExpandedVersionRows() {
+            if (!window.expandedVersionRows) return;
+            Object.keys(window.expandedVersionRows).forEach(seriesId => {
+                if (window.expandedVersionRows[seriesId]) {
+                    const targetRow = document.getElementById('history-' + seriesId);
+                    const chevronIcon = document.getElementById('chevron-' + seriesId);
+                    if (targetRow) {
+                        targetRow.classList.remove('hidden');
+                        if (chevronIcon) chevronIcon.classList.add('rotate-180');
+                    }
+                }
+            });
+        }
+
+        // Restore any open version history rows on initial page load
+        document.addEventListener('DOMContentLoaded', restoreExpandedVersionRows);
 
         // Delete Revision Submission Handlers
         let documentIdToDelete = null;
@@ -537,7 +748,7 @@ $submissions = array_values($docs);
                         }, 500);
                     }
                 } else {
-                    showToast(result.message || 'Failed to delete document',);
+                    showToast(result.message || 'Failed to delete document');
                 }
             } catch (error) {
                 console.error('Error:', error);
@@ -581,6 +792,8 @@ $submissions = array_values($docs);
         // Expose functions to global scope for inline HTML handlers (vital for PJAX execution)
         window.confirmDeleteSubmission = confirmDeleteSubmission;
         window.closeDeleteModal = closeDeleteModal;
+        window.toggleVersionHistory = toggleVersionHistory;
+        window.restoreExpandedVersionRows = restoreExpandedVersionRows;
     </script>
 </body>
 </html>

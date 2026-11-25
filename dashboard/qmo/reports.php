@@ -183,16 +183,52 @@ $overall_rate = $total_required > 0 ? round(($total_approved / $total_required) 
         @media print {
             @page {
                 size: legal landscape; /* Long Bondpaper (8.5in x 14in) */
-                margin: 15mm 15mm 15mm 15mm;
+                margin: 12mm 12mm 12mm 12mm;
             }
-            body { background: white !important; color: black !important; font-size: 11px; }
-            .no-print { display: none !important; }
-            .print-only { display: block !important; }
-            main { padding: 0 !important; margin: 0 !important; overflow: visible !important; width: 100% !important; max-width: 100% !important; }
-            .flex-1 { overflow: visible !important; }
-            .overflow-auto { overflow: visible !important; }
-            div.overflow-x-auto { overflow: visible !important; }
-            
+            html, body {
+                height: auto !important;
+                min-height: auto !important;
+                overflow: visible !important;
+                background: white !important;
+                color: black !important;
+                font-size: 11px !important;
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+            aside, #main-sidebar, .no-print, #messaging-drawer, #notification-dropdown, #toast-container {
+                display: none !important;
+            }
+            .print-only, .print-only[hidden] {
+                display: block !important;
+            }
+            /* Break out of viewport-locked flex/screen wrappers so tables paginate across all pages */
+            body > div.flex,
+            .h-screen,
+            main,
+            main > div,
+            .flex-1,
+            .overflow-hidden,
+            .overflow-auto,
+            .overflow-y-auto,
+            div.overflow-x-auto {
+                display: block !important;
+                height: auto !important;
+                min-height: 0 !important;
+                max-height: none !important;
+                overflow: visible !important;
+                position: static !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                transform: none !important;
+                opacity: 1 !important;
+            }
+            /* Preserve centered flex alignment inside print header only */
+            .print-only .flex {
+                display: flex !important;
+            }
+
             /* Remove shadows, borders, and rounded corners on container */
             .bg-white, .rounded-xl, .shadow-sm, .border, .overflow-hidden {
                 border-radius: 0 !important;
@@ -200,11 +236,44 @@ $overall_rate = $total_required > 0 ? round(($total_approved / $total_required) 
                 box-shadow: none !important;
                 background: transparent !important;
             }
-            
-            /* Plain and formal table styles */
-            table { width: 100% !important; border-collapse: collapse !important; margin-top: 10px !important; border-radius: 0 !important; box-shadow: none !important; }
-            th, td { border: 1px solid #64748b !important; padding: 8px !important; text-align: left !important; color: black !important; border-radius: 0 !important; }
-            th { font-weight: bold !important; text-transform: uppercase !important; font-size: 10px !important; background-color: #f1f5f9 !important; border-bottom: 2px solid black !important; }
+
+            /* Plain and formal multi-page table styles */
+            table {
+                width: 100% !important;
+                border-collapse: collapse !important;
+                margin-top: 8px !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
+                page-break-inside: auto !important;
+                break-inside: auto !important;
+            }
+            thead {
+                display: table-header-group !important;
+            }
+            tbody {
+                display: table-row-group !important;
+            }
+            tr {
+                page-break-inside: avoid !important;
+                break-inside: avoid !important;
+                page-break-after: auto !important;
+            }
+            th, td {
+                border: 1px solid #64748b !important;
+                padding: 6px 8px !important;
+                text-align: left !important;
+                color: black !important;
+                border-radius: 0 !important;
+            }
+            th {
+                font-weight: bold !important;
+                text-transform: uppercase !important;
+                font-size: 10px !important;
+                background-color: #f1f5f9 !important;
+                border-bottom: 2px solid black !important;
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }
             td { font-size: 10px !important; }
             span { background: transparent !important; color: black !important; padding: 0 !important; font-weight: normal !important; }
             td.font-bold, td span.font-bold, td.text-right, td.text-right span { font-weight: bold !important; }

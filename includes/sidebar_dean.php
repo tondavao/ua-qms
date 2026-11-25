@@ -49,7 +49,10 @@ if (isset($_SESSION['office_id']) && !empty($_SESSION['office_id'])) {
     <div class="p-6 flex items-center justify-between border-b border-gray-50 sidebar-header-box relative">
         <div class="flex items-center gap-3 logo-container">
             <img src="<?php echo $_SESSION['logo_base64']; ?>" alt="UA Logo" class="w-14 h-14 rounded-full shadow-sm flex-shrink-0 transition-none" loading="eager" decoding="async" fetchpriority="high">
-            <span class="font-bold text-2xl text-ua-maroon tracking-wide sidebar-logo-text">UA QMS</span>
+            <div class="flex flex-col text-white font-black text-[12px] leading-tight tracking-wide uppercase sidebar-logo-text font-sans">
+                <span class="block whitespace-nowrap">UA-TLMC</span>
+                <span class="block whitespace-nowrap">QUALITY MANAGEMENT</span>
+            </div>
         </div>
         <button id="close-sidebar-btn" class="md:hidden p-2 text-gray-500 hover:bg-gray-100 rounded-lg transition-colors">
             <i class="fas fa-times text-lg"></i>
@@ -509,15 +512,23 @@ if (isset($_SESSION['office_id']) && !empty($_SESSION['office_id'])) {
         scrollbar-width: none !important;  /* Firefox */
     }
 
-    /* Base transitions for sidebar text and logo text to prevent layout pops/jumps */
-    .sidebar-text,
-    .sidebar-logo-text {
+    .sidebar-text {
         display: inline-block !important;
         opacity: 1;
         max-width: 180px;
         transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1), max-width 0.2s cubic-bezier(0.4, 0, 0.2, 1), margin 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
         overflow: hidden;
         white-space: nowrap;
+    }
+
+    .sidebar-logo-text {
+        display: flex !important;
+        flex-direction: column !important;
+        opacity: 1;
+        max-width: 180px;
+        transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1), max-width 0.2s cubic-bezier(0.4, 0, 0.2, 1), margin 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        overflow: hidden;
+        white-space: normal;
     }
 
     /* Desktop Collapsible Sidebar transitions and states */

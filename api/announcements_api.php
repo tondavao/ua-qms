@@ -1,9 +1,5 @@
 <?php
 session_start();
-// Incoming Request Logging
-$incomingLog = date('Y-m-d H:i:s') . " - Incoming: METHOD: " . $_SERVER['REQUEST_METHOD'] . " | GET: " . json_encode($_GET) . " | POST: " . json_encode($_POST) . " | SESSION: " . json_encode($_SESSION ?? []) . "\n";
-file_put_contents(__DIR__ . '/../debug_announcements.log', $incomingLog, FILE_APPEND);
-
 require_once __DIR__ . "/../config/db.php";
 require_once __DIR__ . "/../includes/workflow-tracking.php";
 
@@ -129,13 +125,10 @@ switch ($action) {
             if (!$conn->commit()) {
                 throw new Exception("Commit transaction failed: " . $conn->error);
             }
-            $logMsg = date('Y-m-d H:i:s') . " - Successfully posted announcement: Title: $title, Author: $user_id\n";
-            file_put_contents(__DIR__ . '/../debug_announcements.log', $logMsg, FILE_APPEND);
             echo json_encode(["success" => true, "message" => "Announcement posted successfully!"]);
         } catch (Exception $e) {
             $conn->rollback();
-            $logMsg = date('Y-m-d H:i:s') . " - Error posting announcement: " . $e->getMessage() . "\n" . $e->getTraceAsString() . "\n";
-            file_put_contents(__DIR__ . '/../debug_announcements.log', $logMsg, FILE_APPEND);
+            error_log("Error posting announcement: " . $e->getMessage());
             echo json_encode(["success" => false, "message" => "Error posting announcement: " . $e->getMessage()]);
         }
         break;

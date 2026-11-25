@@ -38,10 +38,23 @@ if ($action === 'get_repository_documents') {
     $limit = isset($_GET['limit']) ? min(100, intval($_GET['limit'])) : 20;
     $offset = ($page - 1) * $limit;
 
-    // Validate sort parameters to prevent SQL injection
-    $allowed_sorts = ['submitted_at', 'file_name', 'office_name', 'doc_code'];
-    $sort_by = in_array($sort_by, $allowed_sorts) ? $sort_by : 'submitted_at';
-    $sort_order = in_array(strtoupper($sort_order), ['ASC', 'DESC']) ? strtoupper($sort_order) : 'DESC';
+    // Validate sort parameters to prevent SQL injection and map to proper table aliases
+    $allowed_sorts = [
+        'submitted_at' => 'd.submitted_at',
+        'file_name'    => 'd.file_name',
+        'office_name'  => 'o.office_name',
+        'doc_code'     => 'dt.doc_code',
+    ];
+    $sort_column = $allowed_sorts[$sort_by] ?? 'd.submitted_at';
+    $sort_order = in_array(strtoupper($sort_order), ['ASC', 'DESC'], true) ? strtoupper($sort_order) : 'DESC';
+
+    // Build status clause
+    $status_clause = "WHERE d.status = 'Approved'";
+    if ($status_filter === 'Archived') {
+        $status_clause = "WHERE d.status = 'Archived'";
+    } elseif ($status_filter === 'All') {
+        $status_clause = "WHERE d.status IN ('Approved', 'Archived')";
+    }
 
     // Build the base query
     $sql = "SELECT d.document_id, d.file_name, d.file_path, d.preview_path, d.status, d.submitted_at,
@@ -53,7 +66,7 @@ if ($action === 'get_repository_documents') {
             JOIN offices o ON d.office_id = o.office_id
             JOIN document_types dt ON d.doc_type_id = dt.doc_type_id
             LEFT JOIN users u ON o.office_id = u.office_id AND u.role IN ('Dean', 'Office')
-            WHERE d.status = 'Approved'";
+            {$status_clause}";
 
     $params = [];
     $types = '';
@@ -100,7 +113,7 @@ if ($action === 'get_repository_documents') {
     $count_sql = "SELECT COUNT(DISTINCT d.document_id) as total FROM documents d
                   JOIN offices o ON d.office_id = o.office_id
                   JOIN document_types dt ON d.doc_type_id = dt.doc_type_id
-                  WHERE d.status = 'Approved'";
+                  {$status_clause}";
     
     // Apply same filters to count query
     if (!empty($search_query)) {
@@ -128,7 +141,7 @@ if ($action === 'get_repository_documents') {
     $total_count = $count_result['total'] ?? 0;
 
     // Add sorting and pagination
-    $sql .= " ORDER BY d." . $sort_by . " " . $sort_order;
+    $sql .= " ORDER BY " . $sort_column . " " . $sort_order;
     $sql .= " LIMIT ? OFFSET ?";
     $params[] = $limit;
     $params[] = $offset;
@@ -224,9 +237,16 @@ if ($action === 'get_repository_stats') {
     $stmt_recent->execute();
     $recent_uploads = $stmt_recent->get_result()->fetch_assoc()['recent_uploads'];
 
+    // Total archived documents
+    $sql_archived = "SELECT COUNT(*) as total_archived FROM documents WHERE status = 'Archived'";
+    $stmt_archived = $conn->prepare($sql_archived);
+    $stmt_archived->execute();
+    $total_archived = $stmt_archived->get_result()->fetch_assoc()['total_archived'];
+
     echo json_encode([
         'success' => true,
         'total_documents' => $total_docs,
+        'total_archived' => $total_archived,
         'recent_uploads_7days' => $recent_uploads,
         'by_type' => $by_type,
         'by_office' => $by_office
@@ -313,15 +333,17 @@ if ($action === 'get_document_details') {
     $sql = "SELECT d.document_id, d.file_name, d.file_path, d.status, d.submitted_at,
                    o.office_id, o.office_name, o.office_code,
                    dt.doc_type_id, dt.doc_code, dt.description,
-                   u.full_name as submitted_by,
-                   COUNT(dr.review_id) as review_count
+                   MAX(u.full_name) as submitted_by,
+                   COUNT(DISTINCT dr.review_id) as review_count
             FROM documents d
             JOIN offices o ON d.office_id = o.office_id
             JOIN document_types dt ON d.doc_type_id = dt.doc_type_id
             LEFT JOIN users u ON o.office_id = u.office_id AND u.role IN ('Dean', 'Office')
             LEFT JOIN document_reviews dr ON d.document_id = dr.document_id
             WHERE d.document_id = ?
-            GROUP BY d.document_id";
+            GROUP BY d.document_id, d.file_name, d.file_path, d.status, d.submitted_at,
+                     o.office_id, o.office_name, o.office_code,
+                     dt.doc_type_id, dt.doc_code, dt.description";
 
     $stmt = $conn->prepare($sql);
     $stmt->bind_param("i", $document_id);

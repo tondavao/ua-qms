@@ -61,15 +61,21 @@ $stmt_app->close();
 
 $stats['completion_rate'] = $total_required_docs > 0 ? round(($approved_required_count / $total_required_docs) * 100) : 0;
 
-// Fetch Upcoming Deadlines
+// Fetch Upcoming Deadlines (respecting unit-specific CAR assignments)
+require_once __DIR__ . "/../../includes/schema_helpers.php";
+ua_qms_ensure_target_office_table($conn);
 $deadlines = [];
 $sql_deadlines = "SELECT ts.deadline, dt.doc_code, dt.description 
                   FROM target_submissions ts 
                   JOIN document_types dt ON ts.doc_type_id = dt.doc_type_id 
-                  WHERE ts.year = ? AND ts.deadline >= CURDATE() 
-                  ORDER BY ts.deadline ASC LIMIT 3";
+                  WHERE ts.year = ? AND ts.deadline >= CURDATE()
+                    AND (
+                        NOT EXISTS (SELECT 1 FROM target_submission_offices tso WHERE tso.target_id = ts.target_id)
+                        OR EXISTS (SELECT 1 FROM target_submission_offices tso WHERE tso.target_id = ts.target_id AND tso.office_id = ?)
+                    )
+                  ORDER BY ts.deadline ASC LIMIT 5";
 $stmt_deadlines = $conn->prepare($sql_deadlines);
-$stmt_deadlines->bind_param("s", $active_year);
+$stmt_deadlines->bind_param("si", $active_year, $office_id);
 $stmt_deadlines->execute();
 $res_deadlines = $stmt_deadlines->get_result();
 while($row = $res_deadlines->fetch_assoc()) {
@@ -78,11 +84,14 @@ while($row = $res_deadlines->fetch_assoc()) {
 $stmt_deadlines->close();
 
 // Fetch Revision Inbox
+ua_qms_ensure_document_annotations_table($conn);
 $revisions = [];
-$sql_revisions = "SELECT d.document_id, d.file_name, dt.doc_code, dr.remarks, dr.reviewed_at 
+$sql_revisions = "SELECT d.document_id, d.file_name, dt.doc_code, dr.remarks, dr.reviewed_at,
+                         (da.annotation_id IS NOT NULL) AS has_edits
                   FROM documents d
                   JOIN document_types dt ON d.doc_type_id = dt.doc_type_id
                   LEFT JOIN document_reviews dr ON d.document_id = dr.document_id
+                  LEFT JOIN document_annotations da ON d.document_id = da.document_id
                   WHERE d.office_id = ? AND d.status = 'Revision'
                   AND dr.review_id = (SELECT MAX(review_id) FROM document_reviews WHERE document_id = d.document_id)
                   ORDER BY dr.reviewed_at DESC";

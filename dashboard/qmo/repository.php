@@ -58,6 +58,7 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
         .status-approved { background-color: #f0fdf4; color: #16a34a; }
         .status-pending { background-color: #fff7ed; color: #ea580c; }
         .status-revision { background-color: #fefce8; color: #ca8a04; }
+        .status-archived { background-color: #f3f4f6; color: #4b5563; border: 1px solid #e5e7eb; }
         
         .loading-spinner {
             border: 3px solid #f3f4f6;
@@ -177,11 +178,16 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
 
 
                      <!-- Statistics Cards -->
-                    <div class="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
+                    <div class="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-5 gap-4 mb-8">
                         <div class="bg-white border border-gray-200 rounded-lg p-5">
-                            <p class="text-sm font-medium text-gray-500">Total Documents</p>
+                            <p class="text-sm font-medium text-gray-500">Active Documents</p>
                             <p id="stat-total" class="mt-2 text-3xl font-bold text-gray-900">0</p>
                             <p class="mt-2 text-xs text-gray-500">In repository</p>
+                        </div>
+                        <div class="bg-white border border-gray-200 rounded-lg p-5">
+                            <p class="text-sm font-medium text-gray-500">Archived Files</p>
+                            <p id="stat-archived" class="mt-2 text-3xl font-bold text-amber-700">0</p>
+                            <p class="mt-2 text-xs text-gray-500">Superseded versions</p>
                         </div>
                         <div class="bg-white border border-gray-200 rounded-lg p-5">
                             <p class="text-sm font-medium text-gray-500">Recent (7 Days)</p>
@@ -203,12 +209,22 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
                     <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 mb-6 no-print">
                         <div class="flex flex-col xl:flex-row gap-2 items-end">
                             <!-- Search Input -->
-                            <div class="w-full xl:w-40">
+                            <div class="w-full xl:w-36">
                                 <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Search</label>
                                 <div class="relative">
                                     <i class="fas fa-search absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400"></i>
-                                    <input type="text" id="search-input" placeholder="Search files..." class="w-full pl-8 pr-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none text-xs">
+                                    <input type="text" id="search-input" placeholder="Search..." class="w-full pl-8 pr-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none text-xs">
                                 </div>
+                            </div>
+
+                            <!-- Status Filter -->
+                            <div class="w-full xl:flex-1 min-w-[100px]">
+                                <label class="block text-[10px] font-bold text-gray-500 uppercase mb-1">Status View</label>
+                                <select id="status-filter" class="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#800000] focus:border-transparent outline-none text-xs font-semibold text-gray-700">
+                                    <option value="Approved" selected>Active (Approved)</option>
+                                    <option value="Archived">Archived (Superseded)</option>
+                                    <option value="All">All Documents</option>
+                                </select>
                             </div>
 
                             <!-- Academic Year Filter -->
@@ -414,6 +430,9 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
 
                 if (data.success) {
                     document.getElementById('stat-total').textContent = data.total_documents;
+                    if (document.getElementById('stat-archived')) {
+                        document.getElementById('stat-archived').textContent = data.total_archived || 0;
+                    }
                     document.getElementById('stat-recent').textContent = data.recent_uploads_7days;
                     document.getElementById('stat-types').textContent = data.by_type.length;
                     document.getElementById('stat-offices').textContent = data.by_office.length;
@@ -546,6 +565,7 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
 
         function applyFilters() {
             currentFilters.search = document.getElementById('search-input').value;
+            currentFilters.status = document.getElementById('status-filter').value;
             currentFilters.doc_type = document.getElementById('doc-type-filter').value;
             currentFilters.office = document.getElementById('office-filter').value;
             currentFilters.academic_year = document.getElementById('ay-filter').value;
@@ -558,6 +578,7 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
 
         document.getElementById('reset-filters-btn').addEventListener('click', () => {
             document.getElementById('search-input').value = '';
+            document.getElementById('status-filter').value = 'Approved';
             document.getElementById('doc-type-filter').value = '';
             document.getElementById('office-filter').value = '';
             document.getElementById('ay-filter').value = '';
@@ -582,6 +603,7 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
         });
 
         // Auto-apply filters on dropdown change
+        document.getElementById('status-filter').addEventListener('change', applyFilters);
         document.getElementById('doc-type-filter').addEventListener('change', applyFilters);
         document.getElementById('office-filter').addEventListener('change', applyFilters);
         document.getElementById('ay-filter').addEventListener('change', applyFilters);
@@ -616,14 +638,21 @@ if (preg_match_all('/\d{4}/', (string)$active_year, $matches)) {
         function getStatusClass(status) {
             if (status === 'Approved') return 'status-approved';
             if (status === 'Revision') return 'status-revision';
+            if (status === 'Archived') return 'status-archived';
             return 'status-pending';
         }
 
         // Initialize on page load
         initializeRepository();
 
-        // Real-time auto-update document repository list and stats
-        setInterval(() => {
+        // Real-time auto-update document repository list and stats (guarded for PJAX)
+        if (window._qmoRepoInterval) clearInterval(window._qmoRepoInterval);
+        window._qmoRepoInterval = setInterval(() => {
+            if (!document.getElementById('documents-container')) {
+                clearInterval(window._qmoRepoInterval);
+                window._qmoRepoInterval = null;
+                return;
+            }
             // If delete modal is open, don't refresh to prevent flickering or losing state
             const deleteModal = document.getElementById('delete-confirm-modal');
             if (deleteModal && !deleteModal.classList.contains('hidden')) {

@@ -12,6 +12,8 @@ if (php_sapi_name() !== 'cli') {
 }
 
 require_once __DIR__ . "/../config/db.php";
+require_once __DIR__ . "/../includes/schema_helpers.php";
+ua_qms_ensure_target_office_table($conn);
 
 header("Content-Type: application/json");
 
@@ -139,9 +141,25 @@ while ($target = $targets_res->fetch_assoc()) {
         continue;
     }
     
-    // Check compliance of each office
+    // Determine which offices this target applies to (specific units if assigned, otherwise all active offices)
+    $target_office_filter = [];
+    $stmt_tso = $conn->prepare("SELECT office_id FROM target_submission_offices WHERE target_id = ?");
+    if ($stmt_tso) {
+        $stmt_tso->bind_param("i", $target_id);
+        $stmt_tso->execute();
+        $tso_res = $stmt_tso->get_result();
+        while ($tso_row = $tso_res->fetch_assoc()) {
+            $target_office_filter[(int)$tso_row['office_id']] = true;
+        }
+        $stmt_tso->close();
+    }
+
+    // Check compliance of each applicable office
     foreach ($offices as $office) {
-        $office_id = $office['office_id'];
+        $office_id = (int)$office['office_id'];
+        if (!empty($target_office_filter) && !isset($target_office_filter[$office_id])) {
+            continue;
+        }
         
         // Query if document of this type has been submitted by this office for active period
         $sql_check = "SELECT status FROM documents 

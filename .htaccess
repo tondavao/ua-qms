@@ -1,0 +1,13 @@
+# Allow document uploads up to 60MB (guarded so CGI/PHP-FPM hosts don't error)
+<IfModule mod_php.c>
+    php_value upload_max_filesize 64M
+    php_value post_max_size 68M
+    php_value max_execution_time 180
+    php_value max_input_time 180
+</IfModule>
+<IfModule mod_php8.c>
+    php_value upload_max_filesize 64M
+    php_value post_max_size 68M
+    php_value max_execution_time 180
+    php_value max_input_time 180
+</IfModule>

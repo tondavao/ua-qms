@@ -3,6 +3,8 @@ session_start();
 require_once __DIR__ . "/../../config/db.php";
 require_once __DIR__ . "/../../includes/system_settings.php";
 require_once __DIR__ . "/../../includes/workflow-tracking.php";
+require_once __DIR__ . "/../../includes/schema_helpers.php";
+ua_qms_ensure_document_annotations_table($conn);
 
 function h($value) {
     return htmlspecialchars((string) ($value ?? ''), ENT_QUOTES, 'UTF-8');
@@ -390,9 +392,19 @@ while ($row = $result_queue->fetch_assoc()) {
 }
 
 $versions_list = [];
+$selected_doc_annotation = null;
 if ($selected_doc) {
+    $stmt_ann = $conn->prepare("SELECT annotation_id, editor_mode, updated_at FROM document_annotations WHERE document_id = ?");
+    if ($stmt_ann) {
+        $stmt_ann->bind_param("i", $selected_doc['document_id']);
+        $stmt_ann->execute();
+        $selected_doc_annotation = $stmt_ann->get_result()->fetch_assoc();
+        $stmt_ann->close();
+    }
+
     $sql_versions = "
-        SELECT d.*, dr.remarks, dr.reviewed_at 
+        SELECT d.*, dr.remarks, dr.reviewed_at,
+               (da.annotation_id IS NOT NULL) AS has_edits
         FROM documents d
         LEFT JOIN (
             SELECT dr1.document_id, dr1.remarks, dr1.reviewed_at
@@ -403,6 +415,7 @@ if ($selected_doc) {
                 GROUP BY document_id
             ) dr2 ON dr1.review_id = dr2.max_id
         ) dr ON d.document_id = dr.document_id
+        LEFT JOIN document_annotations da ON d.document_id = da.document_id
         WHERE d.office_id = ?
           AND d.doc_type_id = ?
           AND d.academic_year = ?
@@ -439,6 +452,7 @@ $has_selected_id = isset($_GET['id']);
     <script src="../../assets/js/notifications.js" defer></script>
     <link rel="stylesheet" href="../../assets/css/file-viewer.css">
     <script src="../../assets/js/file-viewer.js" defer></script>
+    <script src="../../assets/js/document-editor.js" defer></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
         body { font-family: 'Plus Jakarta Sans', sans-serif; }
@@ -744,11 +758,20 @@ $has_selected_id = isset($_GET['id']);
                                         </div>
                                         <div class="flex-1 min-w-0">
                                             <p class="text-sm font-bold text-gray-900 truncate"><?php echo htmlspecialchars($selected_doc['file_name']); ?> <?php if(isset($selected_doc['version_number']) && $selected_doc['version_number'] > 1) echo '<span class="bg-[#800000] text-white text-[10px] font-bold px-2 py-0.5 rounded-md ml-2 shadow-sm border border-red-900"><i class="fas fa-code-branch mr-1"></i>Revision '.$selected_doc['version_number'].'</span>'; ?></p>
-                                            <p class="text-xs text-gray-500">Click to preview document</p>
+                                            <p class="text-xs text-gray-500 flex items-center gap-2 flex-wrap">
+                                                <span>Click to preview or highlight/edit document for revision feedback</span>
+                                                <span id="qmo-edits-saved-badge" class="<?php echo $selected_doc_annotation ? 'inline-flex' : 'hidden'; ?> items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-bold">
+                                                    <i class="fas fa-highlighter text-[9px]"></i> Edits Attached
+                                                </span>
+                                            </p>
                                         </div>
                                         <div class="flex flex-col sm:flex-row gap-2">
+                                            <button type="button" onclick="openDocumentEditor(<?php echo (int)$selected_doc['document_id']; ?>, 'edit', function() { var b = document.getElementById('qmo-edits-saved-badge'); if (b) { b.classList.remove('hidden'); b.classList.add('inline-flex'); } })"
+                                                    class="px-4 py-2 bg-amber-50 text-[#800000] border border-amber-300 text-xs font-bold rounded-lg hover:bg-amber-100 transition-all inline-flex items-center justify-center gap-1.5 whitespace-nowrap">
+                                                <i class="fas fa-highlighter text-[10px]"></i> EDIT / HIGHLIGHT
+                                            </button>
                                             <button onclick="openFileViewer('<?php echo htmlspecialchars($selected_doc['file_path']); ?>', '<?php echo htmlspecialchars($selected_doc['file_name']); ?>')" 
-                                                    class="px-4 py-2 bg-[#800000] text-white border border-[#800000] text-xs font-bold rounded-lg hover:bg-red-950 transition-all inline-flex items-center gap-1">
+                                                    class="px-4 py-2 bg-[#800000] text-white border border-[#800000] text-xs font-bold rounded-lg hover:bg-red-950 transition-all inline-flex items-center justify-center gap-1 whitespace-nowrap">
                                                 <i class="fas fa-eye text-[10px]"></i> PREVIEW
                                             </button>
                                         </div>
@@ -796,7 +819,13 @@ $has_selected_id = isset($_GET['id']);
                                                     <?php endif; ?>
                                                 </div>
                                                 
-                                                <div class="flex-shrink-0">
+                                                <div class="flex-shrink-0 flex items-center gap-1">
+                                                    <?php if (!empty($ver['has_edits'])): ?>
+                                                        <button type="button" onclick="openDocumentEditor(<?php echo (int)$ver['document_id']; ?>, 'edit')"
+                                                                class="p-2 text-amber-700 hover:text-[#800000] hover:bg-amber-50 rounded-lg transition" title="View / edit saved highlights">
+                                                            <i class="fas fa-highlighter text-sm"></i>
+                                                        </button>
+                                                    <?php endif; ?>
                                                     <button onclick="openFileViewer('<?php echo htmlspecialchars($ver['file_path']); ?>', '<?php echo htmlspecialchars($ver['file_name']); ?>')" 
                                                             class="p-2 text-gray-500 hover:text-[#800000] hover:bg-red-50 rounded-lg transition" title="Preview revision">
                                                         <i class="fas fa-eye text-base"></i>
@@ -957,8 +986,14 @@ $has_selected_id = isset($_GET['id']);
             }
         });
 
-        // Real-time auto-update review queue list without page refresh
-        setInterval(async () => {
+        // Real-time auto-update review queue list without page refresh (single interval guarded for PJAX)
+        if (window._qmoReviewQueueInterval) clearInterval(window._qmoReviewQueueInterval);
+        window._qmoReviewQueueInterval = setInterval(async () => {
+            if (!document.getElementById('reviewQueueContainer')) {
+                clearInterval(window._qmoReviewQueueInterval);
+                window._qmoReviewQueueInterval = null;
+                return;
+            }
             try {
                 const url = window.location.href;
                 const cacheBuster = (url.indexOf('?') !== -1 ? '&' : '?') + '_t=' + Date.now();

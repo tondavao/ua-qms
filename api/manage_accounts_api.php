@@ -116,7 +116,7 @@ function updateUser($data) {
     $types = '';
 
     if ($username) {
-        $fields[] = 'username = ?';
+        $fields[] = 'full_name = ?';
         $params[] = $username;
         $types .= 's';
     }

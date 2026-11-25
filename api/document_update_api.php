@@ -150,7 +150,7 @@ if ($action === 'log_upload_process') {
     $sql_log = "INSERT INTO upload_process_logs (document_id, user_id, file_size, file_type, upload_scope, upload_limitations, ip_address) 
                 VALUES (?, ?, ?, ?, ?, ?, ?)";
     $stmt_log = $conn->prepare($sql_log);
-    $stmt_log->bind_param("iiiisss", $document_id, $user_id, $file_size, $file_type, $upload_scope, $upload_limitations, $ip_address);
+    $stmt_log->bind_param("iiissss", $document_id, $user_id, $file_size, $file_type, $upload_scope, $upload_limitations, $ip_address);
 
     if ($stmt_log->execute()) {
         echo json_encode([

@@ -260,7 +260,7 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-1">Role</label>
-                                <select name="role" id="userRole" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none">
+                                <select name="role" id="userRole" required onchange="syncOfficeRequirement()" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ua-maroon outline-none">
                                     <option value="Office">Unit User</option>
                                     <option value="Dean">Dean</option>
                                     <option value="QMO Admin">QMO Admin</option>
@@ -383,6 +383,14 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
         `).join('');
     }
 
+    function syncOfficeRequirement() {
+        const roleEl = document.getElementById('userRole');
+        const officeEl = document.getElementById('userOffice');
+        if (!roleEl || !officeEl) return;
+        const isAdmin = roleEl.value === 'QMO Admin';
+        officeEl.required = !isAdmin;
+    }
+
     function openAccountModal(userId = null) {
         const user = userId ? users.find(item => Number(item.id) === Number(userId)) : null;
         document.getElementById('accountModalTitle').innerHTML = user ? '<i class="fas fa-user-circle"></i> Edit Account' : '<i class="fas fa-user-circle"></i> Add Account';
@@ -392,6 +400,7 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
         document.getElementById('userEmail').value = user?.email || '';
         document.getElementById('userRole').value = user?.role || 'Office';
         document.getElementById('userOffice').value = user?.office_id || '';
+        syncOfficeRequirement();
         
         const passInput = document.getElementById('userPassword');
         const confirmInput = document.getElementById('userConfirmPassword');
@@ -534,6 +543,7 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
     window.openModal = openModal;
     window.closeModal = closeModal;
     window.togglePasswordVisibility = togglePasswordVisibility;
+    window.syncOfficeRequirement = syncOfficeRequirement;
     window.renderTable = renderTable;
 
     document.getElementById('searchInput')?.addEventListener('input', renderTable);

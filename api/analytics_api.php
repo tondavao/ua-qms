@@ -226,7 +226,7 @@ if ($action === 'get_content_recommendations') {
             'submission_count' => $row['submission_count'],
             'approval_rate' => $approval_rate,
             'revision_count' => $row['revision_count'],
-            'avg_days_pending' => round($row['avg_days_pending']),
+            'avg_days_pending' => round((float)($row['avg_days_pending'] ?? 0)),
             'recommendation' => $recommendation,
             'priority' => $priority
         ];

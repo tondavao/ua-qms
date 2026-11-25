@@ -112,43 +112,73 @@ function loadImageViewer(container, filePath, fileName) {
 }
 
 /**
- * Load Office document using Google Docs Viewer
+ * Load Office document inline (DOCX via Mammoth.js in-browser, fallback download for other Office files)
  */
+function ensureMammothForPreview() {
+    if (typeof window.mammoth !== 'undefined') return Promise.resolve(window.mammoth);
+    return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js';
+        s.onload = () => resolve(window.mammoth);
+        s.onerror = () => reject(new Error('Could not load DOCX preview library'));
+        document.head.appendChild(s);
+    });
+}
+
 function loadOfficeViewer(container, filePath, fileName) {
-    // Construct absolute URL for Google Viewer
-    // Google Viewer MUST have a public absolute URL
-    let absoluteUrl = getAbsoluteUrl(filePath);
-    
-    console.log("Absolute URL for Google Viewer:", absoluteUrl);
-    
-    // Check if we are on localhost - Google Viewer won't work on localhost
-    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-        container.innerHTML = `
-            <div class="file-viewer-error">
-                <i class="fas fa-laptop-code"></i>
-                <h4 class="text-lg font-bold mb-2">Local Preview Restricted</h4>
-                <p class="mb-4">Office document previews (DOCX, XLSX) require a public URL for Google Docs Viewer. This feature will work once deployed to a live server.</p>
-                <a href="${filePath}" download="${fileName}" class="file-viewer-download-btn">
-                    <i class="fas fa-download"></i> Download to View Locally
-                </a>
-            </div>
-        `;
+    const ext = (fileName || filePath || '').split('.').pop().toLowerCase();
+
+    if (ext === 'docx') {
+        container.innerHTML = '<div class="flex flex-col items-center justify-center w-full h-full text-white"><i class="fas fa-spinner fa-spin fa-2x mb-3"></i> Rendering Word document...</div>';
+        ensureMammothForPreview()
+            .then(mammoth => fetch(filePath + (filePath.includes('?') ? '&' : '?') + '_t=' + Date.now())
+                .then(res => {
+                    if (!res.ok) throw new Error('Unable to fetch file');
+                    return res.arrayBuffer();
+                })
+                .then(buf => mammoth.convertToHtml({ arrayBuffer: buf }))
+            )
+            .then(result => {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'w-full h-full overflow-auto p-4 md:p-8 bg-gray-200';
+                wrapper.innerHTML = `
+                    <div style="max-width:850px;margin:0 auto;background:#fff;padding:36px 44px;border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.12);color:#111827;font-size:14px;line-height:1.65;">
+                        <div style="display:flex;justify-content:flex-end;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid #e5e7eb;">
+                            <a href="${filePath}" download="${fileName}" class="file-viewer-download-btn" style="padding:6px 14px;font-size:12px;">
+                                <i class="fas fa-download"></i> Download Original DOCX
+                            </a>
+                        </div>
+                        <div class="docx-preview-body">${result.value || '<p><em>(Empty document)</em></p>'}</div>
+                    </div>
+                `;
+                container.innerHTML = '';
+                container.appendChild(wrapper);
+            })
+            .catch(() => {
+                container.innerHTML = `
+                    <div class="file-viewer-error">
+                        <i class="fas fa-file-word"></i>
+                        <h4 class="text-lg font-bold mb-2">Word Document Preview</h4>
+                        <p class="mb-4">Could not render inline preview for this file. Download to view locally.</p>
+                        <a href="${filePath}" download="${fileName}" class="file-viewer-download-btn">
+                            <i class="fas fa-download"></i> Download ${fileName}
+                        </a>
+                    </div>
+                `;
+            });
         return;
     }
-    
-    const iframe = document.createElement('iframe');
-    // Use both Google and Microsoft viewers as fallbacks if needed
-    iframe.src = 'https://docs.google.com/gview?embedded=true&url=' + encodeURIComponent(absoluteUrl);
-    iframe.style.width = '100%';
-    iframe.style.height = '100%';
-    iframe.style.border = 'none';
-    iframe.className = 'bg-white';
-    container.appendChild(iframe);
-    
-    const note = document.createElement('div');
-    note.className = 'preview-note';
-    note.innerHTML = 'Preview powered by Google Docs Viewer';
-    container.appendChild(note);
+
+    container.innerHTML = `
+        <div class="file-viewer-error">
+            <i class="fas fa-file-alt"></i>
+            <h4 class="text-lg font-bold mb-2">Office Document (${ext.toUpperCase()})</h4>
+            <p class="mb-4">Download this file to view it in its native application.</p>
+            <a href="${filePath}" download="${fileName}" class="file-viewer-download-btn">
+                <i class="fas fa-download"></i> Download to View Locally
+            </a>
+        </div>
+    `;
 }
 
 /**

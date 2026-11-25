@@ -184,6 +184,7 @@ $stmt->close();
     </script>
     <script src="../../assets/js/messaging.js" defer></script>
     <script src="../../assets/js/notifications.js" defer></script>
+    <script src="../../assets/js/document-editor.js" defer></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root { --ua-maroon: #800000; }

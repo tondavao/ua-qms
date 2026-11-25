@@ -112,6 +112,12 @@ class UniversalFileViewer {
         } else if (["jpg","jpeg","png","gif","webp"].includes(extension)) {
             this.renderImage(previewPath);
 
+        } else if (extension === "docx") {
+            this.renderDocx(previewPath, fileName);
+
+        } else if (["doc","xls","xlsx","ppt","pptx"].includes(extension)) {
+            this.renderOfficeDownload(originalFilePath, fileName, extension);
+
         } else if (["mp4","webm","ogg"].includes(extension)) {
             this.renderVideo(previewPath);
 
@@ -122,8 +128,68 @@ class UniversalFileViewer {
             this.renderText(previewPath);
 
         } else {
-            this.showError("Preview unavailable for this file type.");
+            this.renderOfficeDownload(originalFilePath, fileName, extension);
         }
+    }
+
+    ensureMammoth() {
+        if (typeof window.mammoth !== "undefined") return Promise.resolve(window.mammoth);
+        return new Promise((resolve, reject) => {
+            const s = document.createElement("script");
+            s.src = "https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js";
+            s.onload = () => resolve(window.mammoth);
+            s.onerror = () => reject(new Error("Could not load DOCX preview engine"));
+            document.head.appendChild(s);
+        });
+    }
+
+    renderDocx(url, fileName) {
+        this.contentArea.innerHTML = `
+            <div class="text-center">
+                <i class="fas fa-spinner fa-spin text-4xl text-[#800000] mb-3"></i>
+                <p class="text-gray-700 font-medium">Rendering Word document...</p>
+            </div>
+        `;
+        this.ensureMammoth()
+            .then(mammoth => fetch(url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now())
+                .then(res => {
+                    if (!res.ok) throw new Error("Failed to load file");
+                    return res.arrayBuffer();
+                })
+                .then(buf => mammoth.convertToHtml({ arrayBuffer: buf }))
+            )
+            .then(result => {
+                this.contentArea.innerHTML = `
+                    <div class="w-full h-full overflow-auto p-4 md:p-8 bg-gray-200 text-left">
+                        <div class="max-w-4xl mx-auto bg-white rounded-lg shadow-lg p-6 md:p-10 text-gray-900 text-sm leading-relaxed">
+                            <div class="flex justify-end pb-3 mb-4 border-b border-gray-200">
+                                <a href="${url}" download="${this.escapeHtml(fileName)}" class="px-3.5 py-1.5 bg-[#800000] hover:bg-red-900 text-white rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition">
+                                    <i class="fas fa-download"></i> Download DOCX
+                                </a>
+                            </div>
+                            <div class="space-y-3 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-gray-400 [&_td]:p-2 [&_th]:border [&_th]:border-gray-400 [&_th]:p-2 [&_th]:bg-gray-100 [&_h1]:text-xl [&_h1]:font-bold [&_h2]:text-lg [&_h2]:font-bold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5">
+                                ${result.value || '<p class="text-gray-400 italic">(Document is empty)</p>'}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            })
+            .catch(() => {
+                this.renderOfficeDownload(url, fileName, "docx");
+            });
+    }
+
+    renderOfficeDownload(url, fileName, ext) {
+        this.contentArea.innerHTML = `
+            <div class="text-center p-10 bg-white rounded-xl shadow max-w-md mx-4">
+                <i class="fas fa-file-alt text-[#800000] text-5xl mb-4"></i>
+                <p class="text-base font-bold text-gray-800 mb-1">${this.escapeHtml(fileName)}</p>
+                <p class="text-xs text-gray-500 mb-5">Inline preview is not available for .${this.escapeHtml(ext)} files. Download to open locally.</p>
+                <a href="${url}" download="${this.escapeHtml(fileName)}" class="px-4 py-2 bg-[#800000] hover:bg-red-900 text-white rounded-lg text-xs font-bold inline-flex items-center gap-2 transition">
+                    <i class="fas fa-download"></i> Download File
+                </a>
+            </div>
+        `;
     }
 
     renderPdf(url) {
