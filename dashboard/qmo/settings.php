@@ -251,6 +251,7 @@ ua_qms_seed_default_units($conn);
                     <button onclick="switchTab('academic')" class="tab-btn px-4 md:px-6 py-4 text-sm font-medium transition-all whitespace-nowrap" id="tab-academic"><i class="fas fa-calendar-alt mr-2"></i> Academic Year</button>
                     <button onclick="switchTab('documents')" class="tab-btn px-4 md:px-6 py-4 text-sm font-medium transition-all whitespace-nowrap" id="tab-documents"><i class="fas fa-file-alt mr-2"></i> Document Types</button>
                     <button onclick="switchTab('offices')" class="tab-btn px-4 md:px-6 py-4 text-sm font-medium transition-all whitespace-nowrap" id="tab-offices"><i class="fas fa-building mr-2"></i> Office/Department</button>
+                    <button onclick="switchTab('security')" class="tab-btn px-4 md:px-6 py-4 text-sm font-medium transition-all whitespace-nowrap" id="tab-security"><i class="fas fa-shield-alt mr-2"></i> Security &amp; MFA</button>
                 </div>
 
                 <!-- Tab Contents -->
@@ -454,6 +455,89 @@ ua_qms_seed_default_units($conn);
                                     </tr>
                                 </tbody>
                             </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Security & MFA Policy Tab Content -->
+                <div id="content-security" class="tab-content hidden space-y-6">
+                    <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-200 space-y-6">
+                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 pb-4 border-b border-gray-150">
+                            <div>
+                                <h2 class="text-lg font-bold flex items-center gap-2 text-gray-800"><i class="fas fa-shield-alt text-primary"></i> Multi-Factor Authentication (New-Device Protection)</h2>
+                                <p class="text-xs text-gray-500 mt-1">Control whether new/unrecognized device logins require MFA verification across all accounts, and optionally configure SMTP for live Email OTP delivery.</p>
+                            </div>
+                        </div>
+
+                        <div id="security-policy-msg" class="hidden p-3 rounded-lg text-xs font-semibold"></div>
+
+                        <!-- Global New-Device MFA Enforcement -->
+                        <div class="p-4 rounded-xl border border-gray-200 bg-gray-50/70 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div class="space-y-1">
+                                <p class="text-sm font-bold text-gray-800">Require MFA on New Devices for All Users</p>
+                                <p class="text-xs text-gray-500 max-w-2xl">
+                                    When <strong>OFF</strong>, users can individually opt in to Authenticator App or Email OTP inside <em>Profile Settings &rarr; Security &amp; MFA</em>.
+                                    When <strong>ON</strong>, every account signing in from a new or untrusted device must verify using their Authenticator App or a 6-digit Email OTP (devices can be trusted for 30 days).
+                                </p>
+                            </div>
+                            <label class="inline-flex items-center cursor-pointer flex-shrink-0">
+                                <input type="checkbox" id="mfa-require-all" class="sr-only peer">
+                                <div class="relative w-12 h-6 bg-gray-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-[#800000]/30 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#800000]"></div>
+                                <span id="mfa-require-all-label" class="ml-3 text-xs font-bold text-gray-700 w-20">Optional</span>
+                            </label>
+                        </div>
+
+                        <!-- Optional SMTP Email Configuration for Email OTP -->
+                        <div class="border border-gray-200 rounded-xl p-5 space-y-4">
+                            <div>
+                                <h3 class="text-sm font-bold text-gray-800 flex items-center gap-2"><i class="fas fa-envelope-open-text text-primary"></i> Email OTP Delivery (SMTP Settings — Optional)</h3>
+                                <p class="text-xs text-gray-500 mt-0.5">Configure an SMTP account (e.g., Gmail App Password, Brevo, or institutional mail server) to send 6-digit Email OTP codes in production. Leave blank to use server mail or local development preview.</p>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div>
+                                    <label class="block text-xs font-bold text-gray-600 uppercase mb-1">SMTP Host</label>
+                                    <input type="text" id="smtp-host" placeholder="e.g. smtp.gmail.com" class="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ua-maroon">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-gray-600 uppercase mb-1">SMTP Port</label>
+                                    <input type="number" id="smtp-port" value="587" placeholder="587" class="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ua-maroon">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-gray-600 uppercase mb-1">Encryption</label>
+                                    <select id="smtp-encryption" class="w-full p-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-ua-maroon">
+                                        <option value="tls">STARTTLS (Port 587)</option>
+                                        <option value="ssl">SSL/TLS (Port 465)</option>
+                                        <option value="none">None (Local / Port 25 or 1025)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-gray-600 uppercase mb-1">SMTP Username</label>
+                                    <input type="text" id="smtp-user" placeholder="e.g. qmo@antiquespride.edu.ph" class="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ua-maroon">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-gray-600 uppercase mb-1">SMTP Password / App Password <span id="smtp-pass-status" class="text-[10px] font-semibold text-emerald-700 normal-case"></span></label>
+                                    <input type="password" id="smtp-pass" placeholder="Leave blank to keep existing" class="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ua-maroon">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-gray-600 uppercase mb-1">Sender Email (From)</label>
+                                    <input type="email" id="smtp-from-email" placeholder="no-reply@antiquespride.edu.ph" class="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ua-maroon">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-wrap items-center justify-between gap-3 pt-2">
+                            <p class="text-xs text-gray-500">
+                                <i class="fas fa-info-circle text-primary mr-1"></i>
+                                Need to unlock a user who lost their authenticator device? Use <strong>Reset MFA</strong> in <em>Manage Accounts</em>.
+                            </p>
+                            <div class="flex items-center gap-3">
+                                <button type="button" onclick="testSmtpEmail()" id="btn-test-smtp" class="px-4 py-2.5 border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 rounded-lg text-xs font-bold transition flex items-center gap-2">
+                                    <i class="fas fa-paper-plane"></i> Send Test OTP
+                                </button>
+                                <button type="button" onclick="saveMfaPolicy()" id="btn-save-mfa-policy" class="px-5 py-2.5 bg-[#800000] hover:bg-red-950 text-white rounded-lg text-xs font-bold transition shadow flex items-center gap-2">
+                                    <i class="fas fa-save"></i> Save Security Policy
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -760,6 +844,7 @@ ua_qms_seed_default_units($conn);
             if (tab === 'offices') loadOffices();
             if (tab === 'system') loadSystemConfig();
             if (tab === 'announcements') loadAnnouncements();
+            if (tab === 'security') loadMfaPolicy();
         }
 
         // Academic Years
@@ -1670,8 +1755,140 @@ ua_qms_seed_default_units($conn);
             });
         }
 
+        // Security & MFA Policy Configuration
+        function showSecurityPolicyMsg(text, isError = false) {
+            const el = document.getElementById('security-policy-msg');
+            if (!el) return;
+            el.className = isError
+                ? 'p-3 rounded-lg text-xs font-semibold bg-red-50 border border-red-200 text-red-800'
+                : 'p-3 rounded-lg text-xs font-semibold bg-emerald-50 border border-emerald-200 text-emerald-800';
+            el.textContent = text;
+            el.classList.remove('hidden');
+        }
+
+        function syncMfaRequireLabel() {
+            const cb = document.getElementById('mfa-require-all');
+            const lbl = document.getElementById('mfa-require-all-label');
+            if (!cb || !lbl) return;
+            lbl.textContent = cb.checked ? 'Required' : 'Optional';
+            lbl.className = cb.checked
+                ? 'ml-3 text-xs font-bold text-[#800000] w-20'
+                : 'ml-3 text-xs font-bold text-gray-700 w-20';
+        }
+
+        async function loadMfaPolicy() {
+            const msg = document.getElementById('security-policy-msg');
+            if (msg) msg.classList.add('hidden');
+            try {
+                const res = await fetch('../../api/mfa_api.php?action=get_admin_policy&_t=' + Date.now(), { cache: 'no-store' });
+                const json = await res.json();
+                if (!json.success) {
+                    showSecurityPolicyMsg(json.error || 'Failed to load MFA policy.', true);
+                    return;
+                }
+                const p = json.data || {};
+                const cb = document.getElementById('mfa-require-all');
+                if (cb) {
+                    cb.checked = !!(p.mfa_require_all || p.require_all);
+                    cb.onchange = syncMfaRequireLabel;
+                    syncMfaRequireLabel();
+                }
+                if (document.getElementById('smtp-host')) document.getElementById('smtp-host').value = p.smtp_host || '';
+                if (document.getElementById('smtp-port')) document.getElementById('smtp-port').value = p.smtp_port || 587;
+                const enc = document.getElementById('smtp-encryption');
+                if (enc) {
+                    enc.value = p.smtp_encryption || 'tls';
+                    if (typeof enc.rebuildCustomOptions === 'function') enc.rebuildCustomOptions();
+                }
+                if (document.getElementById('smtp-user')) document.getElementById('smtp-user').value = p.smtp_user || '';
+                if (document.getElementById('smtp-pass')) document.getElementById('smtp-pass').value = '';
+                if (document.getElementById('smtp-from-email')) document.getElementById('smtp-from-email').value = p.smtp_from_email || '';
+                const passStatus = document.getElementById('smtp-pass-status');
+                if (passStatus) {
+                    passStatus.textContent = p.smtp_pass_set ? '(Saved)' : '';
+                }
+            } catch (err) {
+                showSecurityPolicyMsg('Could not load security policy.', true);
+            }
+        }
+
+        async function saveMfaPolicy() {
+            const btn = document.getElementById('btn-save-mfa-policy');
+            const origHtml = btn ? btn.innerHTML : '';
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+            }
+            try {
+                const payload = {
+                    mfa_require_all: document.getElementById('mfa-require-all')?.checked ? 1 : 0,
+                    smtp_host: document.getElementById('smtp-host')?.value.trim() || '',
+                    smtp_port: Number(document.getElementById('smtp-port')?.value || 587),
+                    smtp_encryption: document.getElementById('smtp-encryption')?.value || 'tls',
+                    smtp_user: document.getElementById('smtp-user')?.value.trim() || '',
+                    smtp_pass: document.getElementById('smtp-pass')?.value || '',
+                    smtp_from_email: document.getElementById('smtp-from-email')?.value.trim() || ''
+                };
+                const res = await fetch('../../api/mfa_api.php?action=update_admin_policy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const json = await res.json();
+                if (json.success) {
+                    showSecurityPolicyMsg(json.message || 'MFA security policy updated.', false);
+                    if (payload.smtp_pass) {
+                        document.getElementById('smtp-pass').value = '';
+                        const passStatus = document.getElementById('smtp-pass-status');
+                        if (passStatus) passStatus.textContent = '(Saved)';
+                    }
+                } else {
+                    showSecurityPolicyMsg(json.error || 'Failed to save policy.', true);
+                }
+            } catch (err) {
+                showSecurityPolicyMsg('Network error while saving security policy.', true);
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = origHtml;
+                }
+            }
+        }
+
+        async function testSmtpEmail() {
+            const btn = document.getElementById('btn-test-smtp');
+            const origHtml = btn ? btn.innerHTML : '';
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
+            }
+            try {
+                const res = await fetch('../../api/mfa_api.php?action=test_smtp_email', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                const json = await res.json();
+                if (json.success) {
+                    showSecurityPolicyMsg(json.message || 'Test OTP sent.', false);
+                } else {
+                    showSecurityPolicyMsg(json.error || 'Failed to send test OTP.', true);
+                }
+            } catch (err) {
+                showSecurityPolicyMsg('Network error while testing SMTP.', true);
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = origHtml;
+                }
+            }
+        }
+
         // Expose functions to global scope for inline HTML handlers (vital for PJAX execution)
         window.switchTab = switchTab;
+        window.loadMfaPolicy = loadMfaPolicy;
+        window.saveMfaPolicy = saveMfaPolicy;
+        window.testSmtpEmail = testSmtpEmail;
         window.loadAYs = loadAYs;
         window.showAddAYModal = showAddAYModal;
         window.saveAddAY = saveAddAY;

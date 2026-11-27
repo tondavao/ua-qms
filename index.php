@@ -1,6 +1,7 @@
 <?php
 session_start();
 include "config/db.php";
+require_once __DIR__ . "/includes/mfa_helper.php";
 
 $message = "";
 
@@ -16,6 +17,21 @@ if (isset($_POST['submit'])) {
     if ($result->num_rows === 1) {
         $user = $result->fetch_assoc();
         if (password_verify($password, $user['password'])) {
+            if (ua_qms_login_requires_mfa($conn, (int)$user['user_id'])) {
+                unset($_SESSION['user_id'], $_SESSION['full_name'], $_SESSION['role'], $_SESSION['office_id'], $_SESSION['profile_photo']);
+                $_SESSION['mfa_pending'] = [
+                    'user_id'       => (int)$user['user_id'],
+                    'full_name'     => $user['full_name'],
+                    'email'         => $user['email'],
+                    'role'          => $user['role'],
+                    'office_id'     => $user['office_id'] ?? null,
+                    'profile_photo' => $user['profile_photo'] ?? null,
+                    'expires_at'    => time() + 600,
+                ];
+                header("Location: verify-mfa.php");
+                exit();
+            }
+
             $_SESSION['user_id'] = $user['user_id'];
             $_SESSION['full_name'] = $user['full_name'];
             $_SESSION['role'] = $user['role'];

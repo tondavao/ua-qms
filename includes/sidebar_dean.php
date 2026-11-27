@@ -1540,3 +1540,4 @@ if (document.readyState === 'loading') {
 </script>
 <script src="https://unpkg.com/lucide@latest"></script>
 <script src="../../assets/js/custom-select.js?v=1.3"></script>
+<script src="../../assets/js/mfa-settings.js?v=1.0"></script>

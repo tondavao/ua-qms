@@ -2,6 +2,7 @@
 session_start();
 require_once __DIR__ . "/../../config/db.php";
 require_once __DIR__ . "/../../includes/unit-seed.php";
+require_once __DIR__ . "/../../includes/schema_helpers.php";
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'QMO Admin') {
     header("Location: ../../index.php");
@@ -15,6 +16,7 @@ if (!function_exists('h')) {
 }
 
 ua_qms_seed_default_units($conn);
+ua_qms_ensure_mfa_tables($conn);
 
 if (isset($_GET['action']) || isset($_POST['action'])) {
     header("Content-Type: application/json");
@@ -39,9 +41,12 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
                 u.office_id,
                 o.office_name AS unit,
                 u.status,
-                u.profile_photo
+                u.profile_photo,
+                COALESCE(m.mfa_enabled, 0) AS mfa_enabled,
+                COALESCE(m.preferred_method, 'totp') AS mfa_method
             FROM users u
             LEFT JOIN offices o ON u.office_id = o.office_id
+            LEFT JOIN user_mfa m ON u.user_id = m.user_id
             ORDER BY u.full_name ASC
         ");
         $users = [];
@@ -364,13 +369,20 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
                 <td class="px-5 py-4 text-sm font-medium text-gray-700">${escapeHtml(user.role)}</td>
                 <td class="px-5 py-4 text-sm text-gray-700">${escapeHtml(user.unit || 'Unassigned')}</td>
                 <td class="px-5 py-4">
-                    <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ${user.status === 'Active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">${escapeHtml(user.status)}</span>
+                    <div class="flex flex-wrap items-center gap-1.5">
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ${user.status === 'Active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">${escapeHtml(user.status)}</span>
+                        ${Number(user.mfa_enabled) === 1 ? `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200" title="MFA Enabled (${user.mfa_method === 'email' ? 'Email OTP' : 'Authenticator App'})"><i class="fas fa-shield-alt text-[10px]"></i> MFA</span>` : ''}
+                    </div>
                 </td>
                 <td class="px-5 py-4 text-right">
-                    <div class="inline-flex items-center gap-2">
+                    <div class="inline-flex flex-wrap justify-end items-center gap-2">
                         <button onclick="openAccountModal(${Number(user.id)})" class="inline-flex items-center gap-1 bg-red-50 text-[#800000] border border-red-200 hover:bg-[#800000] hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-bold transition shadow-sm">
                             <i class="fas fa-edit"></i> Edit
                         </button>
+                        ${Number(user.mfa_enabled) === 1 ? `
+                        <button onclick="resetUserMfa(${Number(user.id)})" class="inline-flex items-center gap-1 bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-600 hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-bold transition shadow-sm" title="Disable MFA and clear trusted devices for recovery">
+                            <i class="fas fa-shield-alt"></i> Reset MFA
+                        </button>` : ''}
                         <button onclick="toggleStatus(${Number(user.id)})" class="inline-flex items-center gap-1 bg-red-50 text-[#800000] border border-red-200 hover:bg-[#800000] hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-bold transition shadow-sm">
                             <i class="fas ${user.status === 'Active' ? 'fa-ban' : 'fa-check-circle'}"></i> ${user.status === 'Active' ? 'Suspend' : 'Activate'}
                         </button>
@@ -536,10 +548,34 @@ if (isset($_GET['action']) || isset($_POST['action'])) {
         });
     }
 
+    async function resetUserMfa(id) {
+        const user = users.find(item => Number(item.id) === Number(id));
+        const displayName = user ? user.name : 'this user';
+        showThemeConfirm(`Reset MFA and clear trusted devices for ${displayName}? They will be able to sign in normally and set up MFA again.`, async () => {
+            try {
+                const res = await fetch('../../api/mfa_api.php?action=admin_reset_user_mfa', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: id })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    if (typeof showThemeAlert === 'function') showThemeAlert(data.message || 'MFA reset successfully.');
+                    fetchUsers();
+                } else {
+                    if (typeof showThemeAlert === 'function') showThemeAlert('Failed to reset MFA: ' + (data.error || 'Unknown error'));
+                }
+            } catch (err) {
+                if (typeof showThemeAlert === 'function') showThemeAlert('An error occurred while resetting MFA.');
+            }
+        });
+    }
+
     // Expose functions to window scope for inline HTML handlers
     window.openAccountModal = openAccountModal;
     window.toggleStatus = toggleStatus;
     window.deleteUser = deleteUser;
+    window.resetUserMfa = resetUserMfa;
     window.openModal = openModal;
     window.closeModal = closeModal;
     window.togglePasswordVisibility = togglePasswordVisibility;
